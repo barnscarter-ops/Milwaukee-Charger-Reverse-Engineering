@@ -1,5 +1,13 @@
 # Milwaukee Charger Reverse Engineering
 
+## Interactive board atlas
+
+Run `npm install` once, then `npm run dev` and open the local URL. The atlas is a two-sided, interactive 3D reconstruction of the charger PCB. Click a board reference designator to record identification, measurements, circuit role, observations, source, and confidence. The component index is searchable; `Add reference` lets you place a newly identified marking on the board. `Relocate marker` lets you correct an estimated position by clicking the PCB. The photographic surface can be toggled, and the source photographs can be opened separately. Records autosave in this browser and can be exported/imported as JSON for travel between computers and Git archival.
+
+The 3D positions are estimated from the evidence photographs, **not measured geometry**. Some small components remain unmapped until their silkscreen designators can be read; the original photos remain the authority. U1 is represented by its empty footprint because it was removed during teardown. No circuit functions or values are prefilled.
+
+For a viewer regression check, keep `npm run dev` running and use `npm run test:visual` in a second terminal. The test uses installed Edge on Windows or Playwright Chromium elsewhere; set `BROWSER_EXECUTABLE` to override the browser path. Screenshots are written to the ignored `artifacts/` folder.
+
 Reverse engineering record for a Milwaukee M12/M18 multi-voltage charger.
 
 ## Project status

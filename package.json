@@ -1,0 +1,21 @@
+{
+  "name": "milwaukee-charger-board-atlas",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "test:visual": "node scripts/verify.mjs"
+  },
+  "dependencies": {
+    "lucide-static": "^1.48.0",
+    "three": "^0.180.0"
+  },
+  "devDependencies": {
+    "playwright": "^1.63.0",
+    "pngjs": "^7.0.0",
+    "vite": "^7.1.0"
+  }
+}

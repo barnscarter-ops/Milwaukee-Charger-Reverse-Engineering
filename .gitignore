@@ -6,3 +6,7 @@ Desktop.ini
 
 # Derived or temporary captures; original evidence is tracked.
 derived/tmp/
+.vite/
+node_modules/
+dist/
+artifacts/
