@@ -1,0 +1,8 @@
+# Local editor and OS files
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+
+# Derived or temporary captures; original evidence is tracked.
+derived/tmp/
