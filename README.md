@@ -36,6 +36,7 @@ The charger is disassembled and unpowered. This repository begins with preserved
 - `notes/TEARDOWN_PLAN.md` - Current work plan and data-collection order.
 - `notes/COMPONENT_INVENTORY.md` - Confirmed and provisional part identifications.
 - `notes/EVIDENCE_LOG.md` - Evidence register and observations.
+- `notes/SESSION_HANDOFF.md` - Latest viewer status and next-session checklist.
 - `schematic/` - Future block diagrams and schematic files.
 
 Read `AGENTS.md` before making changes.
