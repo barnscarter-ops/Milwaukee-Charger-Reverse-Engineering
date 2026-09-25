@@ -1,5 +1,4 @@
-import * as THREE from 'three';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+// Board Atlas UI: reference index, component records, layers (X-ray, isolation, continuity), dialogs.
 import layersIcon from 'lucide-static/icons/layers.svg?raw';
 import imageIcon from 'lucide-static/icons/image.svg?raw';
 import resetIcon from 'lucide-static/icons/rotate-ccw.svg?raw';
@@ -12,572 +11,952 @@ import leftIcon from 'lucide-static/icons/chevron-left.svg?raw';
 import rightIcon from 'lucide-static/icons/chevron-right.svg?raw';
 import listIcon from 'lucide-static/icons/list.svg?raw';
 import moveIcon from 'lucide-static/icons/move.svg?raw';
-import { components as seedComponents, photos } from './board-data.js';
+import helpIcon from 'lucide-static/icons/circle-help.svg?raw';
+import xrayIcon from 'lucide-static/icons/scan-eye.svg?raw';
+import shieldIcon from 'lucide-static/icons/shield-half.svg?raw';
+import cableIcon from 'lucide-static/icons/cable.svg?raw';
+import tagIcon from 'lucide-static/icons/tags.svg?raw';
+import trashIcon from 'lucide-static/icons/trash-2.svg?raw';
+import crosshairIcon from 'lucide-static/icons/crosshair.svg?raw';
+import alertIcon from 'lucide-static/icons/triangle-alert.svg?raw';
+import infoIcon from 'lucide-static/icons/info.svg?raw';
+import { parts as seedParts, unplaced as seedUnplaced, photos, keyParts, kindLabel, halfExtent, footprintCentre, isolation } from './board-data.js';
+import { createAtlas } from './scene.js';
+import { zoneOfFootprint } from './geometry.js';
+import * as store from './store.js';
 import './style.css';
 
-const STORAGE_KEY = 'milwaukee-48-59-1812-board-atlas-v1';
-const COLORS = {
-  pcb: 0x326f5b, edge: 0x183d37, trace: 0x9b9465, pad: 0xd9b879,
-  ink: 0xd1ddcc, dark: 0x1b2526, chip: 0x22292b, metal: 0xb7bec0,
-  yellow: 0xe0b443, amber: 0xb86337, blue: 0x317b9d
-};
+const $ = sel => document.querySelector(sel);
+const esc = s => String(s).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]);
+const collator = new Intl.Collator(undefined, { numeric: true });
+const coarsePointer = matchMedia('(pointer: coarse)').matches;
+const narrow = () => innerWidth <= 600;   // phones: the inspector is a bottom sheet
+const SIDE_NAME = { top: 'Component side', bottom: 'Solder side' };
+const ZONE_TEXT = { primary: 'Primary side', secondary: 'Secondary side', barrier: 'On the isolation barrier', spans: 'Spans the barrier' };
+const CONF_TEXT = { unknown: 'Unknown', probable: 'Probable', confirmed: 'Confirmed' };
 
-const defaultNotes = () => ({ identity: '', measurements: '', role: '', observations: '', evidence: '', confidence: 'unknown' });
-const saved = readSaved();
-let components = seedComponents.map(c => ({ ...c, ...(saved.components?.find(x => x.id === c.id && x.side === c.side) || {}) }));
-for (const c of saved.components || []) {
-  if (!components.some(x => x.id === c.id && x.side === c.side)) components.push(c);
-}
-let notes = saved.notes || {};
+// ---------- state ----------
+const { state: data, migrated } = store.load();
+const ui = store.loadUi();
 let side = 'top';
-let selectedId = null;
-let hoveredId = null;
-let showAllLabels = false;
-let showPhotoSurface = true;
-let addMode = false;
-let relocateMode = false;
+let selected = null;
+let mode = null;            // null | 'add' | 'relocate' | 'pick-a' | 'pick-b'
+let pendingPoint = null;
+let tab = 'record';
 let photoIndex = 0;
-const componentMeshes = new Map();
-const labelSprites = new Map();
-const hitMeshes = [];
-const raycaster = new THREE.Raycaster();
-const pointer = new THREE.Vector2();
+let highlightNet = null;
+const layers = { xray: false, zones: false, links: false };
+const cards = { xray: true, zones: true };
 
+const known = new Map();    // key -> { id, side, kind, p, unplaced, custom, legacy }
+for (const p of seedParts) known.set(p.id, { id: p.id, side: p.side, kind: p.kind, p });
+for (const u of seedUnplaced) known.set(u.id, { id: u.id, side: u.side, kind: 'smd', p: { ...u, kind: 'smd', w: 34, d: 18 }, unplaced: true });
+for (const c of data.custom) if (!known.has(c.id)) known.set(c.id, { id: c.id, side: c.side, kind: 'smd-custom', p: { id: c.id, side: c.side, kind: 'smd-custom', x: c.x, y: c.y, w: 24, d: 24, custom: true }, custom: true });
+for (const id of Object.keys(data.notes)) if (!known.has(id)) known.set(id, { id, side: 'bottom', kind: 'smd-custom', p: { id, side: 'bottom', kind: 'smd-custom', w: 24, d: 24, custom: true }, unplaced: true, legacy: true, custom: true });
+
+const conf = id => data.notes[id]?.confidence || 'unknown';
+const record = id => ({ ...store.emptyRecord(), ...(data.notes[id] || {}) });
+
+// ---------- markup ----------
+const LEGEND = `
+            <span class="legend-title">Record confidence</span>
+            <span class="legend-row"><span><i class="dot" data-conf="unknown"></i>Unknown</span><span><i class="dot" data-conf="probable"></i>Probable</span><span><i class="dot" data-conf="confirmed"></i>Confirmed</span></span>
+            <span class="legend-sep"><i class="ring"></i>Small part: ring at its printed legend</span>
+            <span><i class="ghost"></i>Removed during teardown</span>`;
 document.querySelector('#app').innerHTML = `
   <header class="topbar">
-    <div class="brand"><div class="brand-mark"><span></span><span></span><span></span></div><div><strong>BOARD ATLAS</strong><small>48-59-1812 / REV 0.6</small></div></div>
+    <div class="brand"><div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+      <div class="brand-text"><strong>Board Atlas</strong><small>Milwaukee 48-59-1812 &middot; PCB 860323007 Rev 0.6</small></div></div>
+    <div class="segmented side-switch" role="group" aria-label="Board side">
+      <button id="side-top" type="button" aria-pressed="true" title="Component side (F to flip)">Component<span class="wide-only"> side</span></button>
+      <button id="side-bottom" type="button" aria-pressed="false" title="Solder side (F to flip)">Solder<span class="wide-only"> side</span></button>
+    </div>
     <div class="top-actions">
-      <div class="segmented" role="group" aria-label="Board side"><button id="top-side" class="active" type="button">Component side</button><button id="bottom-side" type="button">Solder side</button></div>
-      <button id="surface-toggle" class="icon-button active" title="Toggle photographic PCB surface" aria-label="Toggle photographic PCB surface" type="button">${layersIcon}</button>
-      <button id="photo-button" class="icon-button" title="Open evidence photographs" aria-label="Open evidence photographs" type="button">${imageIcon}</button>
-      <button id="reset-view" class="icon-button" title="Reset camera" aria-label="Reset camera" type="button">${resetIcon}</button>
+      <button id="surface-toggle" class="icon-button" type="button" aria-pressed="true" title="Photo surface on/off (P)" aria-label="Photo surface">${layersIcon}</button>
+      <button id="photo-button" class="icon-button" type="button" title="Evidence photographs" aria-label="Open evidence photographs">${imageIcon}</button>
+      <button id="help-button" class="icon-button" type="button" title="Help and shortcuts (?)" aria-label="Help and shortcuts">${helpIcon}</button>
     </div>
   </header>
   <div class="workspace">
-    <aside class="index-panel" id="index-panel">
-      <div class="panel-heading"><span>REFERENCE INDEX</span><span class="count" id="ref-count"></span><button id="close-index" class="close-index" type="button" aria-label="Close reference index">${closeIcon}</button></div>
-      <div class="search-wrap"><span aria-hidden="true">${searchIcon}</span><input id="search" type="search" placeholder="Find a board marking" autocomplete="off" aria-label="Find a board marking" /></div>
-      <div class="index-tools"><button id="add-reference" type="button">${plusIcon} Add reference</button><button id="label-toggle" type="button" title="Toggle every board marking">All labels</button></div>
-      <div id="add-help" class="add-help" hidden>Click a position on the PCB, then enter its board marking.</div>
-      <div class="index-scroll" id="index-list"></div>
-      <div class="index-footer"><span class="status-dot"></span><span>Photo-estimated placement</span></div>
+    <aside class="index-panel" id="index-panel" aria-label="Reference index">
+      <div class="panel-heading"><span>Reference index</span><span class="count" id="ref-count"></span><button id="close-index" class="close-panel" type="button" aria-label="Close reference index">${closeIcon}</button></div>
+      <div class="search-wrap"><span aria-hidden="true">${searchIcon}</span><input id="search" type="search" placeholder="Find a marking (e.g. R27)" autocomplete="off" spellcheck="false" aria-label="Find a board marking" /></div>
+      <div class="index-tools">
+        <button id="add-reference" type="button" aria-pressed="false">${plusIcon}<span>Add reference</span></button>
+        <button id="label-toggle" type="button" aria-pressed="false" title="Show every marking on this side (L)">${tagIcon}<span>All labels</span></button>
+      </div>
+      <div class="index-scroll" id="index-list" role="list"></div>
+      <div class="index-footer"><div class="legend-body inline">${LEGEND}</div><p class="estimate-note"><span class="status-dot"></span><span>Positions are estimated from photos, not measured.</span></p></div>
     </aside>
-    <main class="scene-wrap" aria-label="Interactive three-dimensional charger board">
+    <main class="scene-wrap" id="scene-wrap">
       <div id="scene"></div>
-      <div class="scene-caption"><strong id="view-caption">COMPONENT SIDE</strong><span>Drag to orbit · Scroll to zoom · Click a marking to inspect</span></div>
-      <div class="scene-scale"><span></span> NOT TO SCALE</div>
-      <button id="mobile-index" class="mobile-index" type="button">${listIcon} Index</button>
+      <div class="scene-top">
+        <button id="mobile-index" class="float-button index-button" type="button" aria-controls="index-panel">${listIcon}<span>Index</span></button>
+        <div class="caption"><strong id="view-caption">Component side</strong><span>Photo-based reconstruction &middot; positions and heights are estimates</span></div>
+        <div class="view-tools">
+          <div class="segmented views" role="group" aria-label="Camera view">
+            <button type="button" data-view="plan" title="Plan view (1)">Plan</button>
+            <button type="button" data-view="three" title="Three-quarter view (2)" aria-pressed="true">3/4</button>
+            <button type="button" data-view="edge" title="Edge-on view (3)">Edge</button>
+          </div>
+          <button id="reset-view" class="icon-button small" type="button" title="Reset camera (R)" aria-label="Reset camera">${resetIcon}</button>
+        </div>
+      </div>
+      <div id="mode-banner" class="mode-banner" role="status" hidden><span id="mode-text"></span><button id="mode-cancel" type="button">Cancel</button></div>
+      <div class="feature-cards">
+        <section class="feature-card" id="xray-card" hidden aria-label="X-ray settings">
+          <header><strong>${xrayIcon} X-ray</strong><button class="card-close" type="button" data-card="xray" aria-label="Hide X-ray settings">${closeIcon}</button></header>
+          <p id="xray-text"></p>
+          <label class="slider"><span>See-through</span><input id="xray-amount" type="range" min="10" max="100" step="5" /><output id="xray-value"></output></label>
+          <label class="check"><input id="xray-lens" type="checkbox" /><span id="xray-lens-text"></span></label>
+          <p class="card-note" id="xray-note"></p>
+        </section>
+        <section class="feature-card zone-card" id="zones-card" hidden aria-label="Isolation zones">
+          <header><strong>${shieldIcon} Isolation zones <em class="tag">probable</em></strong><button class="card-close" type="button" data-card="zones" aria-label="Hide isolation legend">${closeIcon}</button></header>
+          <ul class="zone-legend">
+            <li><i class="swatch primary"></i><span><b>Primary side</b> AC input region <em>probable</em></span></li>
+            <li><i class="swatch barrier"></i><span><b>Isolation barrier</b> hatched keep-out, traced <em>probable</em></span></li>
+            <li><i class="swatch secondary"></i><span><b>Secondary side</b> low-voltage region <em>probable</em></span></li>
+          </ul>
+          <div class="zone-parts" id="zone-parts"></div>
+          <p class="card-note" id="zone-note"></p>
+        </section>
+      </div>
+      <div class="scene-bottom">
+        <div class="legend" id="legend">
+          <button id="legend-toggle" class="legend-toggle" type="button" aria-expanded="false" aria-controls="legend-body">${infoIcon}<span>Legend</span></button>
+          <div class="legend-body" id="legend-body">
+${LEGEND}
+          </div>
+        </div>
+        <div class="layer-bar" role="toolbar" aria-label="Layers">
+          <button type="button" data-layer="xray" aria-pressed="false" title="X-ray: see the other face through the board (X)">${xrayIcon}<span>X-ray</span></button>
+          <button type="button" data-layer="zones" aria-pressed="false" title="Isolation zones (I)">${shieldIcon}<span>Isolation</span></button>
+          <button type="button" data-layer="links" aria-pressed="false" title="Continuity log (C)">${cableIcon}<span>Continuity</span></button>
+        </div>
+      </div>
+      <div class="onboarding" id="onboarding" role="dialog" aria-labelledby="onboard-title" hidden>
+        <span class="eyebrow">Welcome</span>
+        <h2 id="onboard-title">Explore the charger board</h2>
+        <p>A 3D reconstruction of the Milwaukee 48-59-1812 charger PCB, built from rectified photographs. Positions and heights are estimates.</p>
+        <ol>
+          <li><b>${coarsePointer ? 'Drag' : 'Drag'}</b> to orbit, <b>${coarsePointer ? 'pinch' : 'scroll'}</b> to zoom${coarsePointer ? ', two fingers to pan' : ', right-drag to pan'}.</li>
+          <li><b>${coarsePointer ? 'Tap' : 'Click'}</b> a part or search the index to open its record.</li>
+          <li><b>Flip</b> to the solder side; try <b>X-ray</b> and <b>Isolation</b> below.</li>
+        </ol>
+        <button id="onboard-done" class="primary" type="button">Start exploring</button>
+      </div>
+      <div class="loading" id="loading" role="status" aria-live="polite">
+        <div class="loading-card"><div class="loading-mark"><span></span><span></span><span></span></div>
+          <strong id="loading-title">Loading board photographs</strong><span id="loading-text">Rectified component and solder sides</span>
+          <div class="progress"><span id="loading-bar"></span></div>
+          <button id="loading-dismiss" type="button" hidden>Continue without photos</button></div>
+      </div>
     </main>
-    <aside class="inspector" id="inspector">
-      <div class="inspector-head"><div><span class="eyebrow">COMPONENT RECORD</span><h1 id="selected-title">Select a marking</h1></div><button id="close-inspector" class="close-inspector" type="button" aria-label="Close component record">${closeIcon}</button></div>
-      <div id="empty-state" class="empty-state"><div class="empty-glyph">${plusIcon}</div><p>Choose a component in the model or reference index to record what you discover.</p><small>Fields begin empty. Nothing is identified by guesswork.</small></div>
-      <form id="record-form" hidden>
-        <div class="record-meta"><span id="record-side"></span><span id="record-status"></span></div>
-        <button id="relocate-reference" class="relocate-button" type="button" title="Move this marker to a better position on the PCB">${moveIcon} Relocate marker</button>
-        <p id="relocate-help" class="relocate-help" hidden>Click the corrected PCB position.</p>
-        <label>Component / identification<input name="identity" type="text" placeholder="What is this part?" autocomplete="off" /></label>
-        <label>Measurements<textarea name="measurements" rows="3" placeholder="Value, test points, units, conditions..." ></textarea></label>
-        <label>Use in circuit<textarea name="role" rows="3" placeholder="What does it do here?" ></textarea></label>
-        <label>Observations<textarea name="observations" rows="3" placeholder="Markings, polarity, orientation, condition..." ></textarea></label>
-        <label>Evidence / source<input name="evidence" type="text" placeholder="Photo, continuity test, datasheet..." autocomplete="off" /></label>
-        <label>Confidence<select name="confidence"><option value="unknown">Unknown</option><option value="probable">Probable</option><option value="confirmed">Confirmed</option></select></label>
-        <div class="form-foot"><span id="save-state">Saved on this laptop</span><button id="remove-custom" type="button" hidden>Remove marker</button></div>
-      </form>
-      <div class="data-actions"><button id="export-notes" type="button">${downloadIcon} Export records</button><label class="import-button">${uploadIcon} Import records<input id="import-notes" type="file" accept="application/json,.json" hidden /></label></div>
-      <p class="storage-note">Records save in this browser. Export them to keep with the Git project or move between computers.</p>
+    <aside class="inspector" id="inspector" aria-label="Component record and continuity log">
+      <div class="sheet-grip" aria-hidden="true"></div>
+      <div class="tabs" role="tablist" aria-label="Inspector">
+        <button id="tab-record" role="tab" type="button" aria-selected="true" aria-controls="record-panel">Record</button>
+        <button id="tab-links" role="tab" type="button" aria-selected="false" aria-controls="links-panel">Continuity<span class="tab-count" id="links-count"></span></button>
+        <button id="close-inspector" class="close-panel" type="button" aria-label="Close panel">${closeIcon}</button>
+      </div>
+      <section id="record-panel" role="tabpanel" aria-labelledby="tab-record">
+        <div class="inspector-head"><span class="eyebrow" id="selected-kind">Component record</span><h1 id="selected-title">Select a marking</h1></div>
+        <div id="empty-state" class="empty-state"><div class="empty-glyph">${crosshairIcon}</div><p>Choose a part on the board or in the reference index to record what you find.</p><small>Fields start empty. Nothing is identified by guesswork.</small></div>
+        <div id="record-body" hidden>
+          <div class="record-meta" id="record-meta"></div>
+          <div class="provenance" id="provenance"></div>
+          <figure class="evidence" id="evidence" hidden>
+            <div class="evidence-grid"><div><canvas id="crop-top" width="260" height="200"></canvas><figcaption>Component side</figcaption></div><div><canvas id="crop-bottom" width="260" height="200"></canvas><figcaption>Solder side</figcaption></div></div>
+            <figcaption class="evidence-note">Rectified crops of 1-Photo-1.jpg and 3-Photo-3.jpg; tall parts are painted out of the component-side image.</figcaption>
+          </figure>
+          <div class="record-actions">
+            <button id="relocate-reference" class="ghost-button" type="button">${moveIcon}<span>Relocate marker</span></button>
+            <button id="reset-position" class="ghost-button" type="button" hidden>${resetIcon}<span>Reset position</span></button>
+          </div>
+          <form id="record-form" autocomplete="off">
+            <label>Identification<input name="identity" type="text" placeholder="What is this part? (from its marking or datasheet)" maxlength="200" /></label>
+            <label>Measurements<textarea name="measurements" rows="2" placeholder="Value, pins, units, meter and range (unpowered)"></textarea></label>
+            <label>Role in circuit<textarea name="role" rows="2" placeholder="Only once traced or documented"></textarea></label>
+            <label>Observations<textarea name="observations" rows="2" placeholder="Markings, polarity, orientation, condition"></textarea></label>
+            <label>Evidence / source<input name="evidence" type="text" placeholder="Photo file, continuity reading, datasheet and revision" maxlength="300" /></label>
+            <fieldset class="confidence" id="confidence"><legend>Confidence</legend>
+              ${store.CONFIDENCE.map(c => `<label><input type="radio" name="confidence" value="${c}" /><span data-conf="${c}">${CONF_TEXT[c]}</span></label>`).join('')}
+            </fieldset>
+            <div class="form-foot"><span id="save-state">Saved in this browser</span><button id="remove-custom" type="button" hidden>${trashIcon}<span>Remove marker</span></button></div>
+          </form>
+        </div>
+      </section>
+      <section id="links-panel" role="tabpanel" aria-labelledby="tab-links" hidden>
+        <div class="inspector-head"><span class="eyebrow">Continuity log</span><h1>Unpowered readings</h1></div>
+        <p class="safety">${alertIcon}<span>Record continuity and resistance measured with the board unpowered and disconnected from mains. Readings build neutral net names (NET-ref-pin).</span></p>
+        <form id="reading-form" autocomplete="off" novalidate>
+          ${['a', 'b'].map(k => `<div class="endpoint"><span class="endpoint-tag">${k.toUpperCase()}</span>
+            <input name="${k}Ref" list="ref-options" placeholder="Marking" aria-label="Point ${k.toUpperCase()} marking" maxlength="16" spellcheck="false" />
+            <input name="${k}Pin" placeholder="Pin" aria-label="Point ${k.toUpperCase()} pin (optional)" maxlength="8" />
+            <button type="button" class="pick-button" data-pick="${k}" title="Pick point ${k.toUpperCase()} on the board">${crosshairIcon}<span>Pick</span></button></div>`).join('')}
+          <fieldset class="result"><legend>Result</legend>
+            <label><input type="radio" name="result" value="continuity" checked /><span>Continuity</span></label>
+            <label><input type="radio" name="result" value="resistance" /><span>Resistance</span></label>
+            <label><input type="radio" name="result" value="open" /><span>Open</span></label>
+          </fieldset>
+          <label class="value-field" hidden>Value<input name="value" placeholder="e.g. 4.7k" maxlength="20" /></label>
+          <label>Note<input name="note" placeholder="Meter, range, probe points" maxlength="200" /></label>
+          <p class="form-error" id="reading-error" role="alert" hidden></p>
+          <p class="barrier-warn" id="reading-warn" hidden></p>
+          <button type="submit" class="primary wide">Log reading</button>
+        </form>
+        <datalist id="ref-options"></datalist>
+        <h2 class="list-title">Nets <span id="net-count"></span></h2>
+        <div id="net-list" class="net-list"></div>
+        <h2 class="list-title">Readings <span id="reading-count"></span></h2>
+        <div id="reading-list" class="reading-list"></div>
+      </section>
+      <div class="data-actions">
+        <button id="export-notes" type="button">${downloadIcon}<span>Export records</span></button>
+        <label class="import-button" tabindex="0">${uploadIcon}<span>Import records</span><input id="import-notes" type="file" accept="application/json,.json" hidden /></label>
+      </div>
+      <p class="storage-note" id="storage-note">Records save in this browser. Export them to keep with the project or move between computers.</p>
     </aside>
   </div>
-  <dialog id="photo-dialog" class="photo-dialog"><div class="photo-head"><div><span class="eyebrow">SOURCE EVIDENCE</span><strong id="photo-title"></strong></div><button id="photo-close" class="icon-button" aria-label="Close photograph" type="button">${closeIcon}</button></div><img id="photo-image" alt="Charger PCB evidence photograph" /><div class="photo-controls"><button id="photo-prev" type="button">${leftIcon} Previous</button><span id="photo-position"></span><button id="photo-next" type="button">Next ${rightIcon}</button></div></dialog>
-  <dialog id="add-dialog" class="add-dialog"><form method="dialog" id="add-form"><span class="eyebrow">NEW BOARD MARKING</span><h2>Add reference</h2><p>Use the exact designator printed on the PCB. Its position can be refined later.</p><label>Board marking<input id="new-designator" name="designator" required maxlength="16" placeholder="e.g. R58" autocomplete="off" /></label><div class="dialog-actions"><button value="cancel" type="submit">Cancel</button><button value="add" type="submit" class="primary">Add marker</button></div></form></dialog>
-`;
+  <dialog id="photo-dialog" class="photo-dialog" aria-labelledby="photo-title">
+    <div class="photo-head"><div><span class="eyebrow">Source evidence &middot; <span id="photo-file"></span></span><strong id="photo-title"></strong></div><button id="photo-close" class="icon-button" type="button" aria-label="Close photograph">${closeIcon}</button></div>
+    <div class="photo-stage"><img id="photo-image" alt="" /><span class="photo-loading" id="photo-loading">Loading photograph</span></div>
+    <div class="photo-controls"><button id="photo-prev" type="button">${leftIcon}<span>Previous</span></button><span id="photo-position"></span><button id="photo-next" type="button"><span>Next</span>${rightIcon}</button></div>
+  </dialog>
+  <dialog id="add-dialog" class="add-dialog" aria-labelledby="add-title">
+    <form method="dialog" id="add-form"><span class="eyebrow">New board marking</span><h2 id="add-title">Add reference</h2>
+      <p>Use the exact designator printed on the PCB. Its position can be refined later with Relocate.</p>
+      <label>Board marking<input id="new-designator" name="designator" required maxlength="16" placeholder="e.g. R58" autocomplete="off" spellcheck="false" /></label>
+      <p class="form-error" id="add-error" role="alert" hidden></p>
+      <div class="dialog-actions"><button value="cancel" type="submit" formnovalidate>Cancel</button><button value="add" type="submit" class="primary">Add marker</button></div></form>
+  </dialog>
+  <dialog id="confirm-dialog" class="add-dialog" aria-labelledby="confirm-title">
+    <form method="dialog"><span class="eyebrow" id="confirm-eyebrow">Please confirm</span><h2 id="confirm-title"></h2><p id="confirm-text"></p>
+      <div class="dialog-actions"><button value="cancel" type="submit">Cancel</button><button value="ok" type="submit" class="primary" id="confirm-ok">Continue</button></div></form>
+  </dialog>
+  <dialog id="help-dialog" class="help-dialog" aria-labelledby="help-title">
+    <div class="photo-head"><div><span class="eyebrow">Board Atlas</span><strong id="help-title">How to read this model</strong></div><button class="icon-button" type="button" data-close aria-label="Close help">${closeIcon}</button></div>
+    <div class="help-body">
+      <p>The board outline, cut-outs and both surfaces come from two perspective-corrected photographs. Part positions were placed on those photos; heights and shapes are estimated from oblique shots. Nothing here is a measured dimension, and no circuit function is filled in until evidence supports it.</p>
+      <ul class="help-list">
+        <li><b>Rings</b> mark small solder-side parts at their printed legend, within about 5-10 board units (roughly 0.5-1 mm at the assumed scale) of the part.</li>
+        <li><b>X- prefix</b> (e.g. X-BRIDGE) names a part with no legible designator, by appearance.</li>
+        <li><b>Isolation zones</b> are traced from the hatched keep-out printed on the solder side. The board is documented unpowered only.</li>
+      </ul>
+      <h3>Shortcuts</h3>
+      <dl class="shortcuts"><dt>F</dt><dd>Flip board</dd><dt>1 2 3</dt><dd>Plan, 3/4, edge-on view</dd><dt>R</dt><dd>Reset camera</dd><dt>/</dt><dd>Search markings</dd><dt>L</dt><dd>All labels</dd><dt>X I C</dt><dd>X-ray, isolation, continuity</dd><dt>P</dt><dd>Photo surface</dd><dt>Esc</dt><dd>Cancel or close</dd></dl>
+      <button id="help-tour" type="button" class="ghost-button">Show the welcome card again</button>
+    </div>
+  </dialog>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>`;
 
-const sceneHost = document.querySelector('#scene');
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x111b1b);
-scene.fog = new THREE.Fog(0x111b1b, 23, 55);
-const camera = new THREE.PerspectiveCamera(43, 1, 0.1, 100);
-camera.position.set(0, 18.5, 18.3);
-const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-renderer.outputColorSpace = THREE.SRGBColorSpace;
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.55;
-renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-sceneHost.appendChild(renderer.domElement);
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.target.set(0, 0, 1.55);
-controls.enableDamping = true;
-controls.dampingFactor = 0.07;
-controls.minDistance = 7;
-controls.maxDistance = 43;
-controls.maxPolarAngle = Math.PI * 0.84;
-controls.minPolarAngle = 0.1;
-controls.update();
-scene.add(new THREE.HemisphereLight(0xe0f4ec, 0x284640, 2.1));
-const keyLight = new THREE.DirectionalLight(0xfff3d6, 3.3);
-keyLight.position.set(-5, 13, 8);
-keyLight.castShadow = true;
-keyLight.shadow.bias = -0.0005;
-keyLight.shadow.mapSize.set(2048, 2048);
-keyLight.shadow.camera.left = -13;
-keyLight.shadow.camera.right = 13;
-keyLight.shadow.camera.top = 13;
-keyLight.shadow.camera.bottom = -13;
-scene.add(keyLight);
-const fillLight = new THREE.DirectionalLight(0x70aeb8, 2.15);
-fillLight.position.set(8, 9, -6);
-scene.add(fillLight);
-const floor = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), new THREE.MeshStandardMaterial({ color: 0x182323, roughness: 1 }));
-floor.rotation.x = -Math.PI / 2;
-floor.position.y = -1.65;
-floor.receiveShadow = true;
-scene.add(floor);
-const grid = new THREE.GridHelper(100, 60, 0x33504e, 0x243735);
-grid.position.y = -1.64;
-grid.material.transparent = true;
-grid.material.opacity = 0.27;
-scene.add(grid);
+// ---------- 3D ----------
+let atlas;
+try {
+  atlas = createAtlas({
+    host: $('#scene'),
+    onTap: handleTap,
+    onHover: key => { if (key) highlightRow(key, true); else clearRowHover(); },
+    onLabelTap: key => {
+      if (mode?.startsWith('pick')) completePick(key);
+      else if (layers.xray && ui.xrayLens && coarsePointer) atlas.lensTo(key);   // touch lens mode: taps move the lens
+      else select(key, { fly: false });
+    },
+    onStatus: handleStatus
+  });
+} catch (err) {
+  $('#loading-title').textContent = 'This browser cannot display the 3D model';
+  $('#loading-text').textContent = 'WebGL is unavailable. The source photographs are still available from the image button.';
+  $('.progress').hidden = true;
+  throw err;
+}
+window.__atlas = atlas;
 
-const assembly = new THREE.Group();
-scene.add(assembly);
-const boardShape = new THREE.Shape();
-boardShape.moveTo(-5.85, -5.42);
-boardShape.lineTo(5.85, -5.42);
-boardShape.lineTo(5.85, 5.45);
-boardShape.lineTo(2.8, 5.45);
-boardShape.lineTo(2.8, 3.28);
-boardShape.lineTo(-2.55, 3.28);
-boardShape.lineTo(-2.55, 8.84);
-boardShape.lineTo(-5.85, 8.84);
-boardShape.closePath();
-for (const z of [1.65, 2.1, 2.55, 3.0]) {
-  const hole = new THREE.Path();
-  hole.absellipse(0.25, z, 0.18, 0.18, 0, Math.PI * 2, false);
-  boardShape.holes.push(hole);
+atlas.load(seedParts, conf, keyParts);
+for (const [id, k] of known) {
+  if (k.unplaced) atlas.addUnplaced(k.p);
+  else if (k.custom) atlas.addCustom(k.p, conf(id));
 }
-for (const [x, z, w, d] of [[2.95, -1.43, 1.55, 0.22], [2.95, -3.66, 1.55, 0.22]]) {
-  const hole = new THREE.Path();
-  hole.moveTo(x - w / 2, z - d / 2);
-  hole.lineTo(x + w / 2, z - d / 2);
-  hole.lineTo(x + w / 2, z + d / 2);
-  hole.lineTo(x - w / 2, z + d / 2);
-  hole.closePath();
-  boardShape.holes.push(hole);
+for (const [id, pos] of Object.entries(data.overrides)) if (known.has(id)) atlas.move(id, pos.x, pos.y);
+const zoneCache = new Map();
+function zoneOf(id) {
+  if (!isolation) return null;
+  if (zoneCache.has(id)) return zoneCache.get(id);
+  const e = atlas.entries.get(id);
+  const z = !e || e.unplaced ? null : zoneOfFootprint(e.x, e.y, e.he[0], e.he[1], isolation);
+  zoneCache.set(id, z);
+  return z;
 }
-const boardGeo = new THREE.ExtrudeGeometry(boardShape, { depth: 0.18, bevelEnabled: true, bevelThickness: 0.045, bevelSize: 0.035, bevelSegments: 2, curveSegments: 18 });
-boardGeo.rotateX(Math.PI / 2);
-const board = new THREE.Mesh(boardGeo, [new THREE.MeshStandardMaterial({ color: COLORS.pcb, metalness: 0.12, roughness: 0.64, side: THREE.DoubleSide }), new THREE.MeshStandardMaterial({ color: COLORS.edge, roughness: 0.7 })]);
-board.position.y = 0.09;
-board.castShadow = true;
-board.receiveShadow = false;
-board.userData.isBoard = true;
-assembly.add(board);
 
-const photoSurfaces = [];
-function addPhotoSurface(url, crop, isBottom) {
-  const img = new Image();
-  img.src = url;
-  img.onload = () => {
-    const canvas = document.createElement('canvas');
-    canvas.width = 2048; canvas.height = 2048;
-    const ctx = canvas.getContext('2d');
-    const [x, y, w, h] = crop;
-    ctx.drawImage(img, x * img.width, y * img.height, w * img.width, h * img.height, 0, 0, 2048, 2048);
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.colorSpace = THREE.SRGBColorSpace;
-    texture.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
-    const geo = new THREE.ShapeGeometry(boardShape, 18);
-    geo.rotateX(Math.PI / 2);
-    const pos = geo.getAttribute('position');
-    const uv = geo.getAttribute('uv');
-    for (let i = 0; i < pos.count; i++) {
-      const xCoord = (pos.getX(i) + 5.85) / 11.7;
-      const zCoord = (pos.getZ(i) + 5.42) / 14.26;
-      uv.setXY(i, isBottom ? 1 - xCoord : xCoord, 1 - zCoord);
-    }
-    uv.needsUpdate = true;
-    const surface = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ map: texture, transparent: true, opacity: 0.64, depthWrite: false, side: THREE.DoubleSide }));
-    surface.position.y = isBottom ? -0.146 : 0.146;
-    surface.visible = showPhotoSurface;
-    surface.renderOrder = 1;
-    assembly.add(surface);
-    photoSurfaces.push(surface);
-  };
-}
-addPhotoSurface(photos[0].src, [0.153, 0.167, 0.738, 0.698], false);
-addPhotoSurface(photos[1].src, [0.022, 0.074, 0.923, 0.845], true);
-
-function material(color, metalness = 0, roughness = 0.65) { return new THREE.MeshStandardMaterial({ color, metalness, roughness }); }
-const mat = {
-  pad: material(COLORS.pad, 0.62, 0.36), trace: material(COLORS.trace, 0.35, 0.56),
-  chip: material(COLORS.chip, 0.12, 0.72), metal: material(COLORS.metal, 0.72, 0.27),
-  yellow: material(COLORS.yellow, 0.1, 0.72), amber: material(COLORS.amber, 0.06, 0.7),
-  blue: material(COLORS.blue, 0.15, 0.55), white: material(0xd6d6c4, 0.06, 0.8),
-  green: material(0x537f65, 0.04, 0.65), ferrite: material(0x303633, 0.06, 0.82)
-};
-
-function box(parent, w, h, d, x, y, z, m, bevel = 0) {
-  const geo = bevel ? new THREE.BoxGeometry(w, h, d) : new THREE.BoxGeometry(w, h, d);
-  const mesh = new THREE.Mesh(geo, m);
-  mesh.position.set(x, y, z);
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
-  parent.add(mesh);
-  return mesh;
-}
-function cylinder(parent, radius, h, x, y, z, m, segments = 32) {
-  const mesh = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, h, segments), m);
-  mesh.position.set(x, y, z);
-  mesh.castShadow = true;
-  parent.add(mesh);
-  return mesh;
-}
-function plane(parent, w, d, x, y, z, m) {
-  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, d), m);
-  mesh.rotation.x = -Math.PI / 2;
-  mesh.position.set(x, y, z);
-  parent.add(mesh);
-  return mesh;
-}
-function line(parent, points, color, radius = 0.012) {
-  const curve = new THREE.CatmullRomCurve3(points.map(p => new THREE.Vector3(...p)));
-  const mesh = new THREE.Mesh(new THREE.TubeGeometry(curve, Math.max(8, points.length * 5), radius, 5, false), material(color, 0.46, 0.6));
-  parent.add(mesh);
-  return mesh;
-}
-function addPads() {
-  const seed = [[-5.25,-4.95],[-4.55,-4.95],[4.9,-4.95],[5.5,-4.95],[-5.15,8.18],[-4.42,8.18],[-3.65,8.18],[-2.93,8.18],[4.72,4.95],[5.39,4.95]];
-  for (const [x,z] of seed) {
-    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.125, 0.033, 7, 20), mat.pad);
-    ring.rotation.x = Math.PI / 2;
-    ring.position.set(x, 0.135, z);
-    assembly.add(ring);
-  }
-  for (let i = 0; i < 55; i++) {
-    const x = -5.35 + ((i * 3.13) % 10.7);
-    const z = -4.9 + ((i * 2.31) % 9.8);
-    if (x < -2.1 || z < 5.25) cylinder(assembly, 0.023, 0.007, x, 0.137, z, mat.pad, 12);
-  }
-  for (const [a,b] of [[[-4.8,0.1],[-2.75,0.1]], [[-4.8,1.7],[-2.75,1.7]], [[3.45,-4.3],[5.3,-4.3]], [[3.8,4.7],[5.25,4.7]], [[-4.7,6.3],[-3.3,6.3]]]) {
-    line(assembly, [[a[0],0.13,a[1]],[(a[0]+b[0])/2,0.13,(a[1]+b[1])/2],[b[0],0.13,b[1]]], COLORS.trace, 0.016);
-  }
-  // The hatched strip marks the visible board isolation region, not a traced net.
-  const stripeMat = new THREE.MeshBasicMaterial({ color: 0xc5d7b9, transparent: true, opacity: 0.61, side: THREE.DoubleSide });
-  for (let z = -4.95; z < 4.95; z += 0.38) {
-    const stripe = plane(assembly, 0.62, 0.018, 0.34, 0.142, z, stripeMat);
-    stripe.rotation.z = -0.45;
-  }
-  for (const [x,z] of [[-5.4,-4.98],[5.42,-4.98],[-5.4,8.43],[-2.95,8.43]]) {
-    cylinder(assembly, 0.19, 0.009, x, 0.14, z, mat.pad);
-    cylinder(assembly, 0.11, 0.012, x, 0.149, z, material(0x183c35));
+// ---------- status / loading ----------
+function handleStatus(s) {
+  if (s.type === 'progress') { $('#loading-bar').style.width = `${Math.round((s.loaded / s.total) * 100)}%`; return; }
+  if (s.type === 'ready') { $('#loading').classList.add('done'); setTimeout(() => { $('#loading').hidden = true; }, 380); maybeOnboard(); return; }
+  if (s.type === 'texture-error' || s.type === 'error') {
+    $('#loading-title').textContent = 'Board photographs could not be loaded';
+    $('#loading-text').textContent = 'The 3D model still works with plain surfaces. Photo evidence and X-ray are unavailable.';
+    $('#loading').classList.add('failed');
+    $('#loading-dismiss').hidden = false;
+    photoAvailable = false;
+    syncSurfaceUi();
   }
 }
-addPads();
+let photoAvailable = true;
+$('#loading-dismiss').addEventListener('click', () => { $('#loading').hidden = true; maybeOnboard(); });
 
-function modelComponent(c) {
-  const anchor = new THREE.Group();
-  const px = c.side === 'bottom' ? -c.x : c.x;
-  anchor.position.set(px, c.side === 'top' ? 0.16 : -0.16, c.z);
-  if (c.side === 'bottom') anchor.rotation.z = Math.PI;
-  assembly.add(anchor);
-  const k = c.kind;
-  if (k === 'transformer') {
-    box(anchor, c.w, 1.12, c.d, 0, 0.67, 0, mat.ferrite);
-    box(anchor, c.w * 0.54, 1.35, c.d * 0.92, 0, 0.82, 0, mat.yellow);
-    for (const s of [-1,1]) box(anchor, 0.15, 0.83, c.d * 0.85, s * c.w * 0.46, 0.72, 0, mat.amber);
-    for (let i = -2; i <= 2; i++) {
-      box(anchor, 0.12, 0.11, 0.5, -0.82 + i * 0.36, 0.06, -1.18, mat.metal);
-      box(anchor, 0.12, 0.11, 0.5, -0.82 + i * 0.36, 0.06, 1.18, mat.metal);
-    }
-  } else if (k === 'electrolytic') {
-    cylinder(anchor, c.w * 0.55, c.w * 1.5, 0, c.w * 0.76, 0, mat.chip);
-    cylinder(anchor, c.w * 0.53, 0.035, 0, c.w * 1.54, 0, mat.metal);
-    box(anchor, c.w * 0.78, 0.01, 0.026, 0, c.w * 1.565, 0, mat.chip);
-    box(anchor, 0.026, 0.01, c.w * 0.78, 0, c.w * 1.57, 0, mat.chip);
-  } else if (k === 'inductor') {
-    box(anchor, c.w, 0.54, c.d, 0, 0.34, 0, mat.ferrite);
-    for (let i = -2; i <= 2; i++) box(anchor, 0.065, 0.58, c.d + 0.05, i * c.w / 5, 0.32, 0, mat.amber);
-  } else if (k === 'disc') {
-    const disc = cylinder(anchor, c.w * 0.52, 0.13, 0, 0.43, 0, k === 'F1' ? mat.amber : mat.green);
-    disc.rotation.z = Math.PI / 2;
-    for (const s of [-1,1]) box(anchor, 0.045, 0.48, 0.045, s * c.w * 0.25, 0.23, 0, mat.metal);
-  } else if (k === 'led') {
-    cylinder(anchor, 0.11, 0.25, 0, 0.17, 0, material(0xc2debd, 0.1, 0.25), 20);
-  } else if (k === 'removed') {
-    box(anchor, c.w, 0.017, c.d, 0, 0.015, 0, material(0x1c433c));
-    for (let i = -2; i <= 2; i++) box(anchor, 0.08, 0.025, 0.19, i * 0.15, 0.029, c.d * 0.55, mat.pad);
-    const outline = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(c.w * 1.08, 0.02, c.d * 1.12)), new THREE.LineBasicMaterial({ color: 0xedc47d }));
-    outline.position.y = 0.045;
-    anchor.add(outline);
-  } else if (k === 'film') {
-    box(anchor, c.w, 0.56, c.d, 0, 0.32, 0, k === 'C1' ? mat.yellow : mat.amber);
-  } else if (k === 'power') {
-    box(anchor, c.w, 0.18, c.d, 0, 0.13, 0, mat.chip);
-    box(anchor, c.w * 0.46, 0.04, c.d * 0.8, -c.w * 0.42, 0.04, 0, mat.metal);
-    for (const z of [-0.17,0.17]) box(anchor, 0.2, 0.03, 0.08, c.w * 0.5, 0.04, z, mat.metal);
-  } else if (k === 'shunt') {
-    box(anchor, c.w, 0.13, c.d, 0, 0.09, 0, mat.white);
-    for (const s of [-1,1]) box(anchor, 0.15, 0.145, c.d, s * c.w * 0.44, 0.09, 0, mat.metal);
-  } else if (k === 'ic' || k === 'chip') {
-    box(anchor, c.w, 0.18, c.d, 0, 0.14, 0, mat.chip);
-    const pins = k === 'ic' ? 8 : 4;
-    for (let i = 0; i < pins; i++) {
-      const x = ((i + 0.5) / pins - 0.5) * c.w * 0.9;
-      for (const s of [-1,1]) box(anchor, 0.028, 0.026, 0.14, x, 0.037, s * (c.d * 0.53), mat.metal);
-    }
-  } else {
-    box(anchor, c.w, k === 'smd' ? 0.085 : 0.15, c.d, 0, k === 'smd' ? 0.068 : 0.09, 0, k === 'diode' ? mat.chip : mat.white);
-    for (const s of [-1,1]) box(anchor, 0.083, 0.09, c.d, s * c.w * 0.43, 0.06, 0, mat.metal);
-  }
-  anchor.traverse(obj => { if (obj.isMesh) { obj.userData.componentId = c.id; hitMeshes.push(obj); } });
-  componentMeshes.set(c.id, anchor);
-  const label = makeLabel(c.id, c.status === 'removed');
-  label.position.set(px + (c.w > 0.8 ? c.w * 0.52 : 0.32), c.side === 'top' ? 0.5 : -0.5, c.z + (c.d > 0.8 ? c.d * 0.44 : 0.1));
-  assembly.add(label);
-  labelSprites.set(c.id, label);
+function maybeOnboard() {
+  if (!ui.onboarded) { $('#onboarding').hidden = false; $('#onboard-done').focus({ preventScroll: true }); }
+  if (migrated) toast(`Carried over ${migrated} record${migrated === 1 ? '' : 's'} from the first atlas. Marker positions start fresh.`);
+}
+$('#onboard-done').addEventListener('click', () => dismissOnboarding());
+
+// ---------- toast ----------
+let toastTimer;
+function toast(text, tone = '') {
+  const t = $('#toast');
+  t.textContent = text; t.dataset.tone = tone; t.classList.add('show');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 3600);
 }
 
-function makeLabel(value, ghost = false) {
-  const canvas = document.createElement('canvas');
-  canvas.width = 256; canvas.height = 88;
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = ghost ? 'rgba(91,58,36,.9)' : 'rgba(18,35,34,.92)';
-  ctx.beginPath(); ctx.roundRect(7, 9, 242, 68, 12); ctx.fill();
-  ctx.strokeStyle = ghost ? '#e2aa60' : '#739b88'; ctx.lineWidth = 3; ctx.stroke();
-  ctx.fillStyle = ghost ? '#ffd597' : '#f0f7e5';
-  ctx.font = 'bold 39px ui-monospace, Consolas, monospace';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(value, 128, 44);
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false, depthWrite: false }));
-  sprite.scale.set(1.08, 0.37, 1);
-  sprite.renderOrder = 20;
-  return sprite;
+// ---------- confirm dialog (replaces window.confirm) ----------
+function confirmAction(title, text, ok = 'Continue') {
+  return new Promise(resolve => {
+    const d = $('#confirm-dialog');
+    $('#confirm-title').textContent = title; $('#confirm-text').textContent = text; $('#confirm-ok').textContent = ok;
+    d.returnValue = '';
+    d.addEventListener('close', () => resolve(d.returnValue === 'ok'), { once: true });
+    d.showModal();
+  });
 }
 
-for (const c of components) modelComponent(c);
-const selectionRing = new THREE.Mesh(new THREE.TorusGeometry(0.59, 0.025, 6, 64), new THREE.MeshBasicMaterial({ color: 0xf6cf7a, transparent: true, opacity: 0.95, depthTest: false }));
-selectionRing.rotation.x = Math.PI / 2;
-selectionRing.visible = false;
-assembly.add(selectionRing);
-
-function updateLabelVisibility() {
-  const important = new Set(['T1','U1','C1','C2','C3','L2','NTC1','F1','D4','D6','R27','U4','U5','U6','Q6','Q7','Q14','Q15']);
-  for (const c of components) {
-    const label = labelSprites.get(c.id);
-    if (!label) continue;
-    label.visible = c.side === side && (showAllLabels || important.has(c.id) || c.id === selectedId || c.id === hoveredId);
-    label.material.opacity = c.id === selectedId ? 1 : (c.id === hoveredId ? 0.98 : 0.87);
-  }
+// ---------- persistence ----------
+function persist() {
+  const ok = store.save(data);
+  $('#save-state').textContent = ok ? 'Saved in this browser' : 'Not saved: browser storage is unavailable';
+  $('#save-state').classList.toggle('warn', !ok);
 }
 
-function setSide(next) {
-  side = next;
-  document.querySelector('#top-side').classList.toggle('active', side === 'top');
-  document.querySelector('#bottom-side').classList.toggle('active', side === 'bottom');
-  document.querySelector('#view-caption').textContent = side === 'top' ? 'COMPONENT SIDE' : 'SOLDER SIDE';
-  assembly.rotation.z = side === 'top' ? 0 : Math.PI;
-  for (const c of components) componentMeshes.get(c.id).visible = c.side === side;
-  renderIndex();
-  updateLabelVisibility();
-  if (selectedId && components.find(c => c.id === selectedId)?.side !== side) selectComponent(null);
-}
-
-function selectComponent(id, focus = false) {
-  selectedId = id;
-  const c = components.find(x => x.id === id);
-  const form = document.querySelector('#record-form');
-  document.querySelector('#empty-state').hidden = Boolean(c);
-  form.hidden = !c;
-  document.querySelector('#selected-title').textContent = c?.id || 'Select a marking';
-  selectionRing.visible = Boolean(c);
-  if (c) {
-    if (c.side !== side) setSide(c.side);
-    selectionRing.position.set(c.side === 'bottom' ? -c.x : c.x, c.side === 'top' ? 0.2 : -0.2, c.z);
-    selectionRing.scale.setScalar(Math.max(0.68, Math.min(1.9, Math.max(c.w,c.d) * 1.4)));
-    const record = { ...defaultNotes(), ...(notes[c.id] || {}) };
-    for (const [key,value] of Object.entries(record)) form.elements[key].value = value;
-    document.querySelector('#record-side').textContent = c.side === 'top' ? 'Component side' : 'Solder side';
-    document.querySelector('#record-status').textContent = c.status === 'removed' ? 'Removed from board' : 'Present in photos';
-    document.querySelector('#remove-custom').hidden = !c.custom;
-    document.querySelector('#relocate-reference').classList.toggle('active', relocateMode);
-    if (focus) {
-      const target = new THREE.Vector3(c.side === 'bottom' ? -c.x : c.x, 0, c.z).applyMatrix4(assembly.matrixWorld);
-      controls.target.copy(target);
-      camera.position.set(target.x + (side === 'top' ? 0.2 : -0.2), 9.7, target.z + 8.9);
-      controls.update();
-    }
-  }
-  updateLabelVisibility();
-  renderIndex();
-  document.querySelector('#inspector').classList.toggle('mobile-open', Boolean(c));
+// ---------- index ----------
+function rowHtml(k, other = false) {
+  const note = data.notes[k.id]?.identity || (k.legacy ? 'Record from the first atlas' : k.unplaced ? 'Not yet located' : k.custom ? 'Added marker' : kindLabel(k.kind));
+  return `<button class="ref-row${k.id === selected ? ' selected' : ''}${other ? ' other-side' : ''}" data-key="${esc(k.id)}" type="button" role="listitem" tabindex="-1">
+    <i class="dot" data-conf="${conf(k.id)}" aria-label="${CONF_TEXT[conf(k.id)]}"></i><span class="ref-id">${esc(k.id)}</span><span class="ref-note">${esc(note)}</span>${other ? `<span class="ref-side">${k.side === 'top' ? 'Comp.' : 'Solder'}</span>` : ''}<span class="ref-chevron" aria-hidden="true">&rsaquo;</span></button>`;
 }
 
 function renderIndex() {
-  const filter = document.querySelector('#search').value.trim().toUpperCase();
-  const visible = components.filter(c => c.side === side && c.id.toUpperCase().includes(filter));
-  visible.sort((a,b) => a.id.localeCompare(b.id, undefined, { numeric: true }));
-  document.querySelector('#ref-count').textContent = `${visible.length} mapped`;
-  document.querySelector('#index-list').innerHTML = visible.map(c => `<button class="ref-row ${c.id === selectedId ? 'selected' : ''}" data-id="${escapeHtml(c.id)}" type="button"><span class="ref-id">${escapeHtml(c.id)}</span><span class="ref-note">${escapeHtml(notes[c.id]?.identity || (c.status === 'removed' ? 'removed footprint' : ''))}</span><span class="ref-chevron">›</span></button>`).join('') || '<p class="no-results">No matching markings on this side.</p>';
+  const q = $('#search').value.trim().toUpperCase();
+  const match = k => !q || k.id.toUpperCase().includes(q) || (data.notes[k.id]?.identity || '').toUpperCase().includes(q);
+  const all = [...known.values()].sort((a, b) => collator.compare(a.id, b.id));
+  const here = all.filter(k => !k.unplaced && k.side === side && match(k));
+  const there = q ? all.filter(k => !k.unplaced && k.side !== side && match(k)) : [];
+  const loose = all.filter(k => k.unplaced && match(k));
+  let html = here.map(k => rowHtml(k)).join('');
+  if (!here.length) html += `<p class="no-results">${q ? `No markings on the ${SIDE_NAME[side].toLowerCase()} match &ldquo;${esc(q)}&rdquo;.` : 'No markings on this side.'}</p>`;
+  if (there.length) html += `<p class="group-title">On the ${SIDE_NAME[side === 'top' ? 'bottom' : 'top'].toLowerCase()}</p>` + there.map(k => rowHtml(k, true)).join('');
+  if (loose.length) html += `<p class="group-title">Not yet located</p>` + loose.map(k => rowHtml(k)).join('');
+  $('#index-list').innerHTML = html;
+  const total = all.filter(k => !k.unplaced && k.side === side).length;
+  $('#ref-count').textContent = q ? `${here.length} of ${total}` : `${total} mapped`;
+  syncRowTabStop();
 }
 
-function escapeHtml(s) { return String(s).replace(/[&<>"']/g, ch => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' })[ch]); }
-function readSaved() { try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {}; } catch { return {}; } }
-function persist() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify({ schema: 1, board: 'Milwaukee 48-59-1812 / 860323007 Rev 0.6', updated: new Date().toISOString(), components, notes }));
-  document.querySelector('#save-state').textContent = 'Saved on this laptop';
-}
-function getBoardHit(event) {
-  const rect = renderer.domElement.getBoundingClientRect();
-  pointer.set(((event.clientX - rect.left) / rect.width) * 2 - 1, -((event.clientY - rect.top) / rect.height) * 2 + 1);
-  raycaster.setFromCamera(pointer, camera);
-  const hits = raycaster.intersectObjects([...hitMeshes, board], false);
-  return hits.find(h => (h.object.userData.componentId && components.find(c => c.id === h.object.userData.componentId)?.side === side) || h.object.userData.isBoard);
+// Roving tab stop: the list is one Tab stop (the selected row, else the first); arrow keys move inside it.
+function syncRowTabStop() {
+  const rows = document.querySelectorAll('#index-list .ref-row');
+  const stop = $('#index-list .ref-row.selected') || rows[0];
+  for (const r of rows) r.tabIndex = r === stop ? 0 : -1;
 }
 
-let mouseDown = null;
-renderer.domElement.addEventListener('pointerdown', e => { mouseDown = { x: e.clientX, y: e.clientY }; });
-renderer.domElement.addEventListener('pointerup', e => {
-  if (!mouseDown || Math.hypot(e.clientX - mouseDown.x, e.clientY - mouseDown.y) > 5) return;
-  const hit = getBoardHit(e);
-  if (relocateMode && selectedId && hit?.object.userData.isBoard) {
-    const c = components.find(x => x.id === selectedId);
-    const localPoint = assembly.worldToLocal(hit.point.clone());
-    c.x = Math.round((side === 'bottom' ? -localPoint.x : localPoint.x) * 100) / 100;
-    c.z = Math.round(localPoint.z * 100) / 100;
-    const anchor = componentMeshes.get(c.id);
-    const px = side === 'bottom' ? -c.x : c.x;
-    anchor.position.set(px, side === 'top' ? 0.16 : -0.16, c.z);
-    labelSprites.get(c.id).position.set(px + (c.w > 0.8 ? c.w * 0.52 : 0.32), side === 'top' ? 0.5 : -0.5, c.z + (c.d > 0.8 ? c.d * 0.44 : 0.1));
-    selectionRing.position.set(px, side === 'top' ? 0.2 : -0.2, c.z);
-    relocateMode = false;
-    document.querySelector('#relocate-reference').classList.remove('active');
-    document.querySelector('#relocate-help').hidden = true;
-    persist();
-    return;
-  }
-  if (addMode && hit?.object.userData.isBoard) {
-    const localPoint = assembly.worldToLocal(hit.point.clone());
-    window.pendingPosition = { x: Math.round((side === 'bottom' ? -localPoint.x : localPoint.x) * 100) / 100, z: Math.round(localPoint.z * 100) / 100 };
-    document.querySelector('#new-designator').value = '';
-    document.querySelector('#add-dialog').showModal();
-    document.querySelector('#new-designator').focus();
-    return;
-  }
-  if (hit?.object.userData.componentId) selectComponent(hit.object.userData.componentId);
-});
-renderer.domElement.addEventListener('pointermove', e => {
-  const hit = getBoardHit(e);
-  const id = hit?.object.userData.componentId || null;
-  if (id !== hoveredId) { hoveredId = id; updateLabelVisibility(); }
-  renderer.domElement.style.cursor = addMode || relocateMode ? 'crosshair' : (id ? 'pointer' : 'grab');
-});
-document.querySelector('#index-list').addEventListener('click', e => {
+function updateRow(id) {
+  const row = $(`#index-list .ref-row[data-key="${CSS.escape(id)}"]`);
+  if (!row) return;
+  const k = known.get(id);
+  row.outerHTML = rowHtml(k, row.classList.contains('other-side'));
+  syncRowTabStop();
+}
+
+let hoverRow = null;
+function highlightRow(key) {
+  clearRowHover();
+  hoverRow = $(`#index-list .ref-row[data-key="${CSS.escape(key)}"]`);
+  hoverRow?.classList.add('hovered');
+}
+function clearRowHover() { hoverRow?.classList.remove('hovered'); hoverRow = null; }
+
+$('#index-list').addEventListener('click', e => {
   const row = e.target.closest('.ref-row');
-  if (row) { selectComponent(row.dataset.id, true); document.querySelector('#index-panel').classList.remove('mobile-open'); }
+  if (!row) return;
+  const key = row.dataset.key;
+  if (mode?.startsWith('pick')) { completePick(key); return; }
+  select(key, { fly: true });
+  if (innerWidth <= 800) $('#index-panel').classList.remove('open');
 });
-document.querySelector('#search').addEventListener('input', renderIndex);
-document.querySelector('#top-side').addEventListener('click', () => setSide('top'));
-document.querySelector('#bottom-side').addEventListener('click', () => setSide('bottom'));
-document.querySelector('#reset-view').addEventListener('click', () => {
-  setDefaultCamera();
+let listHover = null;
+function hoverFromList(key) {
+  if (key === listHover) return;
+  listHover = key;
+  atlas.hover(key);
+}
+$('#index-list').addEventListener('pointerover', e => { const row = e.target.closest('.ref-row'); if (row && !coarsePointer) hoverFromList(row.dataset.key); });
+$('#index-list').addEventListener('pointerleave', () => hoverFromList(null));
+$('#search').addEventListener('input', renderIndex);
+$('#search').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { const first = $('#index-list .ref-row'); if (first) first.click(); }
+  if (e.key === 'ArrowDown') { e.preventDefault(); $('#index-list .ref-row')?.focus(); }
 });
-document.querySelector('#surface-toggle').addEventListener('click', e => {
-  showPhotoSurface = !showPhotoSurface;
-  e.currentTarget.classList.toggle('active', showPhotoSurface);
-  for (const surface of photoSurfaces) surface.visible = showPhotoSurface;
+$('#index-list').addEventListener('keydown', e => {
+  if (!['ArrowDown', 'ArrowUp'].includes(e.key)) return;
+  const rows = [...document.querySelectorAll('#index-list .ref-row')];
+  const i = rows.indexOf(document.activeElement);
+  if (i < 0) return;
+  e.preventDefault();
+  (rows[i + (e.key === 'ArrowDown' ? 1 : -1)] || (e.key === 'ArrowUp' ? $('#search') : rows[i])).focus();
 });
-document.querySelector('#label-toggle').addEventListener('click', e => { showAllLabels = !showAllLabels; e.target.classList.toggle('active', showAllLabels); updateLabelVisibility(); });
-document.querySelector('#add-reference').addEventListener('click', e => {
-  addMode = !addMode; e.target.classList.toggle('active', addMode); document.querySelector('#add-help').hidden = !addMode;
-  if (addMode) { relocateMode = false; document.querySelector('#relocate-reference').classList.remove('active'); document.querySelector('#relocate-help').hidden = true; }
+
+// ---------- selection & inspector ----------
+function select(key, { fly = false } = {}) {
+  const k = key && known.get(key);
+  if (key && !k) return;
+  if (k && !k.unplaced && k.side !== side) setSide(k.side);
+  selected = key || null;
+  atlas.select(selected, { fly });
+  if (mode === 'relocate') setMode(null);
+  renderInspector();
+  for (const row of document.querySelectorAll('#index-list .ref-row.selected')) row.classList.remove('selected');
+  $(`#index-list .ref-row[data-key="${CSS.escape(selected || '')}"]`)?.classList.add('selected');
+  syncRowTabStop();
+  if (selected) { setTab('record'); openSheet(); }
+  else if (tab === 'record' && narrow()) closeSheet();
+}
+
+function renderInspector() {
+  const k = selected && known.get(selected);
+  $('#empty-state').hidden = !!k;
+  $('#record-body').hidden = !k;
+  $('#selected-title').textContent = k ? k.id : 'Select a marking';
+  $('#selected-kind').textContent = k ? (k.legacy ? 'Record from the first atlas' : k.custom ? 'Added marker' : kindLabel(k.kind)) : 'Component record';
+  if (!k) return;
+  const e = atlas.entries.get(k.id);
+  const zone = zoneOf(k.id);
+  const chips = [`<span class="chip-meta">${SIDE_NAME[k.side]}</span>`];
+  if (k.kind === 'removed') chips.push('<span class="chip-meta warn">Removed during teardown</span>');
+  if (k.unplaced) chips.push('<span class="chip-meta warn">Position unknown</span>');
+  else chips.push(`<span class="chip-meta">${data.overrides[k.id] ? 'Position corrected by you' : 'Position estimated'}</span>`);
+  if (zone) chips.push(`<span class="chip-meta zone-${zone}" title="${esc(isolation.source)}">${ZONE_TEXT[zone]} &middot; probable</span>`);
+  $('#record-meta').innerHTML = chips.join('');
+  const prov = [];
+  if (k.p.note) prov.push(esc(k.p.note));
+  if (k.p.prov) prov.push(esc(k.p.prov));
+  if (k.p.bridges) prov.push(esc(k.p.bridges));
+  if (k.id.startsWith('X-')) prov.push('No legible designator; named by appearance.');
+  if (k.side === 'bottom' && e && e.hotspot >= 0 && !k.custom) prov.push('The ring marks the printed legend; the part itself is within about 5-10 board units.');
+  if (k.unplaced && !k.legacy) prov.push('Listed in the first atlas, but its legend was not found on the rectified photos. Use Place marker once located.');
+  if (k.legacy) prov.push('This record came from the first atlas and has no marker yet. Use Place marker to position it.');
+  $('#provenance').innerHTML = prov.map(t => `<p>${t}</p>`).join('');
+  $('#provenance').hidden = !prov.length;
+  $('#relocate-reference span').textContent = k.unplaced ? 'Place marker' : 'Relocate marker';
+  $('#relocate-reference').classList.toggle('active', mode === 'relocate');
+  $('#reset-position').hidden = !data.overrides[k.id] || !!k.custom;
+  $('#remove-custom').hidden = !k.custom;
+  const rec = record(k.id);
+  const form = $('#record-form');
+  for (const f of ['identity', 'measurements', 'role', 'observations', 'evidence']) form.elements[f].value = rec[f];
+  form.querySelector(`input[name=confidence][value=${rec.confidence}]`).checked = true;
+  drawEvidence(e, k);
+}
+
+function drawEvidence(e, k) {
+  const fig = $('#evidence');
+  if (!e || e.unplaced || !photoAvailable || !atlas.photoImage('top')) { fig.hidden = true; return; }
+  fig.hidden = false;
+  const half = Math.max(30, Math.min(260, Math.max(e.he[0], e.he[1]) * 1.5 + 22));
+  for (const face of ['top', 'bottom']) {
+    const canvas = $(`#crop-${face}`), c = canvas.getContext('2d');
+    const img = atlas.photoImage(face);
+    c.fillStyle = '#0b1111'; c.fillRect(0, 0, canvas.width, canvas.height);
+    if (!img) continue;
+    const s = img.naturalWidth / 1071;
+    const aspect = canvas.width / canvas.height;
+    const hw = half * aspect, hh = half;
+    c.imageSmoothingQuality = 'high';
+    c.drawImage(img, (e.x - hw) * s, (e.y - hh) * s, hw * 2 * s, hh * 2 * s, 0, 0, canvas.width, canvas.height);
+    const k2 = canvas.width / (hw * 2);
+    const bx = canvas.width / 2 - e.he[0] * k2, by = canvas.height / 2 - e.he[1] * k2;
+    c.strokeStyle = 'rgba(255, 207, 110, .95)'; c.lineWidth = 2; c.setLineDash([5, 4]);
+    c.strokeRect(bx, by, e.he[0] * 2 * k2, e.he[1] * 2 * k2);
+    c.setLineDash([]);
+  }
+  fig.querySelector('.evidence-note').textContent = k.side === 'top'
+    ? 'Rectified crops of 1-Photo-1.jpg (tall parts painted out) and 3-Photo-3.jpg. Dashed box: modelled footprint.'
+    : 'Rectified crops of 1-Photo-1.jpg and 3-Photo-3.jpg (mirrored and registered to the top view). Dashed box: modelled footprint.';
+}
+
+$('#record-form').addEventListener('input', e => {
+  if (!selected || !e.target.name) return;
+  const rec = record(selected);
+  rec[e.target.name] = e.target.value;
+  data.notes[selected] = rec;
+  if (e.target.name === 'confidence') atlas.setConfidence(selected, rec.confidence);
+  persist();
+  updateRow(selected);
 });
-document.querySelector('#relocate-reference').addEventListener('click', e => {
-  if (!selectedId) return;
-  relocateMode = !relocateMode;
-  e.currentTarget.classList.toggle('active', relocateMode);
-  document.querySelector('#relocate-help').hidden = !relocateMode;
-  if (relocateMode) {
-    addMode = false; document.querySelector('#add-reference').classList.remove('active'); document.querySelector('#add-help').hidden = true;
-    document.querySelector('#inspector').classList.remove('mobile-open');
+
+$('#relocate-reference').addEventListener('click', () => setMode(mode === 'relocate' ? null : 'relocate'));
+$('#reset-position').addEventListener('click', () => {
+  if (!selected || !data.overrides[selected]) return;
+  delete data.overrides[selected];
+  const p = known.get(selected).p;
+  const [x, y] = footprintCentre(p);
+  atlas.move(selected, x, y); zoneCache.delete(selected);
+  persist(); renderInspector(); refreshLinks();
+  toast(`${selected} returned to its photo-estimated position.`);
+});
+$('#remove-custom').addEventListener('click', async () => {
+  const k = known.get(selected);
+  if (!k?.custom) return;
+  const ok = await confirmAction(`Remove ${k.id}?`, 'The marker and its record are deleted from this browser. Continuity readings that use it stay in the log.', 'Remove marker');
+  if (!ok) return;
+  data.custom = data.custom.filter(c => c.id !== k.id);
+  delete data.notes[k.id]; delete data.overrides[k.id];
+  known.delete(k.id); atlas.removeEntry(k.id); zoneCache.delete(k.id);
+  selected = null; persist(); renderIndex(); renderInspector(); refreshLinks(); closeSheet();
+  toast(`${k.id} removed.`);
+});
+
+// ---------- tap handling & modes ----------
+function dismissOnboarding() {
+  if ($('#onboarding').hidden) return;
+  $('#onboarding').hidden = true;
+  ui.onboarded = true;
+  store.saveUi(ui);
+}
+
+function handleTap(hit) {
+  dismissOnboarding();
+  if (mode === 'add' || mode === 'relocate') {
+    if (!hit || !hit.onBoard) { toast('That point is off the board. Pick a point on the PCB.', 'warn'); return; }
+    const pt = { x: Math.round(hit.x * 10) / 10, y: Math.round(hit.y * 10) / 10 };
+    if (mode === 'add') { pendingPoint = { ...pt, side }; openAddDialog(); return; }
+    placeSelected(pt);
+    return;
+  }
+  if (mode === 'pick-a' || mode === 'pick-b') {
+    if (hit?.key) completePick(hit.key); else toast('Pick a part or ring on the board.', 'warn');
+    return;
+  }
+  // On touch screens a tap in X-ray lens mode only moves the lens (the scene already did); selecting would cover it.
+  if (layers.xray && ui.xrayLens && coarsePointer) return;
+  if (hit?.key) select(hit.key, { fly: false });
+  else if (selected && !narrow()) select(null);
+}
+
+function placeSelected(pt) {
+  const k = known.get(selected);
+  if (!k) return;
+  if (k.legacy || (k.custom && k.unplaced)) {
+    k.unplaced = false; k.legacy = false; k.side = side; k.p = { ...k.p, side, x: pt.x, y: pt.y };
+    data.custom.push({ id: k.id, side, x: pt.x, y: pt.y });
+    atlas.removeEntry(k.id);
+    atlas.addCustom(k.p, conf(k.id));
+  } else {
+    if (k.custom) { const c = data.custom.find(c => c.id === k.id); if (c) { c.x = pt.x; c.y = pt.y; } }
+    else data.overrides[k.id] = pt;
+    if (k.unplaced) { k.unplaced = false; k.side = side; k.p = { ...k.p, side }; atlas.entries.get(k.id).side = side; }
+    atlas.move(k.id, pt.x, pt.y);
+  }
+  zoneCache.delete(k.id);
+  setMode(null);
+  persist();
+  atlas.select(k.id);
+  renderIndex(); renderInspector(); refreshLinks(); refreshRefOptions();
+  openSheet();
+  toast(`${k.id} placed. Saved in this browser.`);
+}
+
+const MODE_TEXT = {
+  add: () => `${coarsePointer ? 'Tap' : 'Click'} the board where the new marking is printed.`,
+  relocate: () => `${coarsePointer ? 'Tap' : 'Click'} the corrected position of ${selected}.`,
+  'pick-a': () => `${coarsePointer ? 'Tap' : 'Click'} a part for point A.`,
+  'pick-b': () => `${coarsePointer ? 'Tap' : 'Click'} a part for point B.`
+};
+function setMode(next) {
+  mode = next;
+  $('#mode-banner').hidden = !mode;
+  if (mode) $('#mode-text').textContent = MODE_TEXT[mode]();
+  $('#add-reference').setAttribute('aria-pressed', String(mode === 'add'));
+  $('#relocate-reference').classList.toggle('active', mode === 'relocate');
+  for (const b of document.querySelectorAll('.pick-button')) b.classList.toggle('active', mode === `pick-${b.dataset.pick}`);
+  atlas.setCursor(mode ? 'crosshair' : null);
+  if (mode && innerWidth <= 800) { if (narrow()) closeSheet(); $('#index-panel').classList.remove('open'); }
+}
+$('#mode-cancel').addEventListener('click', () => { const was = mode; setMode(null); if (was && was !== 'add' && narrow()) openSheet(); });
+$('#add-reference').addEventListener('click', () => setMode(mode === 'add' ? null : 'add'));
+
+function openAddDialog() {
+  $('#new-designator').value = '';
+  $('#add-error').hidden = true;
+  $('#add-dialog').showModal();
+  $('#new-designator').focus();
+}
+$('#add-form').addEventListener('submit', e => {
+  if (e.submitter?.value !== 'add') { setMode(null); return; }
+  e.preventDefault();
+  const id = $('#new-designator').value.trim().toUpperCase();
+  const err = !/^[A-Z][A-Z0-9+\-]{0,15}$/.test(id) ? 'Use a board marking such as R58 or NTC2 (letters first, no spaces).'
+    : known.has(id) ? `${id} is already in the index. Select it and use Relocate instead.` : '';
+  if (err) { $('#add-error').textContent = err; $('#add-error').hidden = false; return; }
+  const p = { id, side: pendingPoint.side, x: pendingPoint.x, y: pendingPoint.y };
+  data.custom.push(p);
+  known.set(id, { id, side: p.side, kind: 'smd-custom', p: { ...p, kind: 'smd-custom', w: 24, d: 24, custom: true }, custom: true });
+  atlas.addCustom(known.get(id).p, 'unknown');
+  persist();
+  $('#add-dialog').close();
+  setMode(null);
+  renderIndex(); refreshRefOptions();
+  select(id);
+  toast(`${id} added. Record what you find in the panel.`);
+});
+$('#new-designator').addEventListener('input', () => { $('#add-error').hidden = true; });
+
+// ---------- sides, views, surface, labels ----------
+let indexTimer = 0;
+function setSide(next, animate = true) {
+  if (next === side) return;
+  side = next;
+  atlas.setSide(side, animate);
+  $('#side-top').setAttribute('aria-pressed', String(side === 'top'));
+  $('#side-bottom').setAttribute('aria-pressed', String(side === 'bottom'));
+  $('#view-caption').textContent = SIDE_NAME[side];
+  if (selected) { const k = known.get(selected); if (k && !k.unplaced && k.side !== side) { selected = null; atlas.select(null); renderInspector(); if (tab === 'record' && narrow()) closeSheet(); } }
+  // Rebuilding ~170 index rows makes the browser re-raster the list; do it once the board has landed so the flip stays smooth.
+  clearTimeout(indexTimer);
+  if (animate && !matchMedia('(prefers-reduced-motion: reduce)').matches) { $('#index-list').classList.add('stale'); indexTimer = setTimeout(() => { renderIndex(); $('#index-list').classList.remove('stale'); }, 1120); }
+  else renderIndex();
+  syncXrayText();
+  refreshLinks();
+}
+$('#side-top').addEventListener('click', () => setSide('top'));
+$('#side-bottom').addEventListener('click', () => setSide('bottom'));
+
+function setView(view) {
+  atlas.setView(view);
+  for (const b of document.querySelectorAll('.views button')) b.setAttribute('aria-pressed', String(b.dataset.view === view));
+}
+for (const b of document.querySelectorAll('.views button')) b.addEventListener('click', () => setView(b.dataset.view));
+$('#reset-view').addEventListener('click', () => setView('three'));
+
+let surfaceOn = true;
+function syncSurfaceUi() {
+  $('#surface-toggle').setAttribute('aria-pressed', String(surfaceOn && photoAvailable));
+  const xrayBtn = document.querySelector('[data-layer=xray]');
+  xrayBtn.disabled = !surfaceOn || !photoAvailable;
+  xrayBtn.title = xrayBtn.disabled ? 'X-ray needs the photo surface' : 'X-ray: see the other face through the board (X)';
+  if (xrayBtn.disabled && layers.xray) toggleLayer('xray', false);
+}
+$('#surface-toggle').addEventListener('click', () => {
+  if (!photoAvailable) { toast('Board photographs are unavailable in this session.', 'warn'); return; }
+  surfaceOn = !surfaceOn;
+  atlas.setPhotoSurface(surfaceOn);
+  syncSurfaceUi();
+  toast(surfaceOn ? 'Photo surface on.' : 'Photo surface off: plain board colours.');
+});
+
+let allLabels = false;
+$('#label-toggle').addEventListener('click', () => {
+  allLabels = !allLabels;
+  atlas.setAllLabels(allLabels);
+  $('#label-toggle').setAttribute('aria-pressed', String(allLabels));
+});
+
+// ---------- layers ----------
+function toggleLayer(name, force) {
+  const on = force ?? !layers[name];
+  if (on === layers[name]) return;
+  layers[name] = on;
+  document.querySelector(`[data-layer=${name}]`).setAttribute('aria-pressed', String(on));
+  if (name === 'xray') { cards.xray = true; atlas.setXray({ xray: on, lens: ui.xrayLens, xrayAmount: ui.xrayAmount }); syncXrayText(); }
+  if (name === 'zones') { cards.zones = true; atlas.setZones(on); renderZoneCard(); }
+  if (name === 'links') { refreshLinks(); if (on) { setTab('links'); openSheet(); } }
+  syncCards();
+}
+for (const b of document.querySelectorAll('[data-layer]')) b.addEventListener('click', () => toggleLayer(b.dataset.layer));
+for (const b of document.querySelectorAll('.card-close')) b.addEventListener('click', () => { cards[b.dataset.card] = false; syncCards(); });
+function syncCards() {
+  const phone = narrow();
+  let xr = layers.xray && cards.xray, zn = layers.zones && cards.zones;
+  if (phone && xr && zn) xr = false;
+  $('#xray-card').hidden = !xr;
+  $('#zones-card').hidden = !zn;
+  syncInset();
+}
+
+function syncXrayText() {
+  const other = side === 'top' ? 'solder' : 'component';
+  $('#xray-text').textContent = `The ${other}-side photo shows through the board in register; parts turn to glass.`;
+  $('#xray-amount').value = Math.round(ui.xrayAmount * 100);
+  $('#xray-value').textContent = `${Math.round(ui.xrayAmount * 100)}%`;
+  $('#xray-lens').checked = ui.xrayLens;
+  $('#xray-lens-text').textContent = coarsePointer ? 'Lens (tap the board to move it)' : 'Lens (follows the pointer)';
+  $('#xray-note').textContent = 'The two photos are registered at 33 through-hole features and agree to about 3 board units. Areas under tall parts are painted out of the component-side photo.';
+}
+$('#xray-amount').addEventListener('input', e => {
+  ui.xrayAmount = Number(e.target.value) / 100;
+  $('#xray-value').textContent = `${e.target.value}%`;
+  atlas.setXray({ xrayAmount: ui.xrayAmount });
+  store.saveUi(ui);
+});
+$('#xray-lens').addEventListener('change', e => { ui.xrayLens = e.target.checked; atlas.setXray({ lens: ui.xrayLens }); store.saveUi(ui); });
+
+function renderZoneCard() {
+  if (!isolation) { $('#zone-parts').innerHTML = '<p class="card-note">No isolation tracing is available.</p>'; return; }
+  const across = [...known.values()].filter(k => !k.unplaced && ['spans', 'barrier'].includes(zoneOf(k.id))).sort((a, b) => collator.compare(a.id, b.id));
+  $('#zone-parts').innerHTML = across.length
+    ? `<span class="zone-parts-title">On or across the barrier</span><div class="chip-row">${across.map(k => `<button type="button" class="mini-chip" data-key="${esc(k.id)}">${esc(k.id)}</button>`).join('')}</div>`
+    : '';
+  $('#zone-note').textContent = `${isolation.primaryEvidence} Board documented unpowered only.`;
+}
+$('#zone-parts').addEventListener('click', e => { const b = e.target.closest('[data-key]'); if (b) select(b.dataset.key, { fly: true }); });
+
+// ---------- continuity ----------
+function refreshRefOptions() {
+  $('#ref-options').innerHTML = [...known.values()].filter(k => !k.unplaced).sort((a, b) => collator.compare(a.id, b.id)).map(k => `<option value="${esc(k.id)}"></option>`).join('');
+}
+
+function endpointZone(ref) {
+  const z = zoneOf(ref);
+  return z;
+}
+function crossesBarrier(a, b) {
+  const za = endpointZone(a), zb = endpointZone(b);
+  return (za === 'primary' && zb === 'secondary') || (za === 'secondary' && zb === 'primary');
+}
+function touchesBarrier(a, b) {
+  return [endpointZone(a), endpointZone(b)].some(z => z === 'spans' || z === 'barrier');
+}
+
+function refreshLinks() {
+  const nets = store.computeNets(data.readings);
+  const netOf = new Map();
+  for (const n of nets) for (const m of n.members) netOf.set(m, n.name);
+  const pk = p => `${p.ref}${p.pin ? `.${p.pin}` : ''}`;
+  const links = data.readings.map(r => ({ ...r, cross: crossesBarrier(r.a.ref, r.b.ref), nets: [netOf.get(pk(r.a)), netOf.get(pk(r.b))].filter(Boolean) }));
+  if (highlightNet && !nets.some(n => n.name === highlightNet)) highlightNet = null;
+  atlas.setLinks(layers.links, links, highlightNet);
+  const pinned = new Set();
+  if (layers.links) for (const l of links) if (!highlightNet || l.nets.includes(highlightNet)) { pinned.add(l.a.ref); pinned.add(l.b.ref); }
+  atlas.setPinned(pinned);
+  $('#links-count').textContent = data.readings.length ? ` ${data.readings.length}` : '';
+  $('#net-count').textContent = nets.length ? `(${nets.length})` : '';
+  $('#reading-count').textContent = data.readings.length ? `(${data.readings.length})` : '';
+  $('#net-list').innerHTML = nets.length
+    ? nets.map(n => `<button type="button" class="net-row${n.name === highlightNet ? ' active' : ''}" data-net="${esc(n.name)}" aria-pressed="${n.name === highlightNet}"><span class="net-name">${esc(n.name)}</span><span class="net-members">${n.members.map(esc).join(', ')}</span></button>`).join('')
+    : '<p class="empty-line">Nets appear once two points show continuity.</p>';
+  $('#reading-list').innerHTML = links.length
+    ? [...links].reverse().map(l => `<div class="reading${l.cross ? ' cross' : ''}" data-id="${esc(l.id)}">
+        <div class="reading-main"><span class="reading-pts">${esc(pk(l.a))} <span aria-hidden="true">&harr;</span><span class="sr-only"> to </span> ${esc(pk(l.b))}</span>
+        <span class="reading-result" data-result="${l.result}">${l.result === 'resistance' ? esc(l.value || '?') + ' &Omega;' : l.result}</span></div>
+        ${l.note ? `<p class="reading-note">${esc(l.note)}</p>` : ''}
+        ${l.cross ? `<p class="reading-warn">${alertIcon}<span>Endpoints are on opposite sides of the traced isolation barrier. Re-check this reading.</span></p>` : ''}
+        <div class="reading-foot"><span>${esc((l.at || '').slice(0, 10))}</span><button type="button" class="link-button" data-delete="${esc(l.id)}">Delete</button></div></div>`).join('')
+    : `<div class="empty-state small"><div class="empty-glyph">${cableIcon}</div><p>No readings yet.</p><small>Pick two points on the board (or type their markings), choose the result, and log it.</small></div>`;
+}
+
+$('#net-list').addEventListener('click', e => {
+  const b = e.target.closest('[data-net]'); if (!b) return;
+  highlightNet = highlightNet === b.dataset.net ? null : b.dataset.net;
+  if (!layers.links) toggleLayer('links', true);
+  refreshLinks();
+});
+$('#reading-list').addEventListener('click', async e => {
+  const id = e.target.closest('[data-delete]')?.dataset.delete; if (!id) return;
+  const r = data.readings.find(x => x.id === id);
+  const ok = await confirmAction('Delete this reading?', `${r.a.ref}${r.a.pin ? '.' + r.a.pin : ''} to ${r.b.ref}${r.b.pin ? '.' + r.b.pin : ''} (${r.result}) will be removed from the log.`, 'Delete reading');
+  if (!ok) return;
+  data.readings = data.readings.filter(x => x.id !== id);
+  persist(); refreshLinks();
+});
+
+const rf = $('#reading-form');
+function readingDraft() {
+  const f = rf.elements;
+  return {
+    a: { ref: f.aRef.value.trim().toUpperCase(), pin: f.aPin.value.trim() },
+    b: { ref: f.bRef.value.trim().toUpperCase(), pin: f.bPin.value.trim() },
+    result: rf.querySelector('input[name=result]:checked').value, value: f.value.value.trim(), note: f.note.value.trim()
+  };
+}
+function validateReading(r) {
+  for (const [tag, p] of [['A', r.a], ['B', r.b]]) {
+    if (!p.ref) return `Choose point ${tag}: pick it on the board or type its marking.`;
+    const k = known.get(p.ref);
+    if (!k) return `${p.ref} is not in the index. Add it first with Add reference.`;
+    if (k.unplaced) return `${p.ref} has no position yet. Place its marker first.`;
+  }
+  if (r.a.ref === r.b.ref && r.a.pin === r.b.pin) return 'Points A and B are the same. Choose two different points.';
+  if (r.result === 'resistance' && !/^\d+(\.\d+)?\s*[kKmM]?$/.test(r.value)) return 'Enter the resistance, e.g. 470, 4.7k or 1.2M (ohms).';
+  return '';
+}
+function syncReadingWarn() {
+  const r = readingDraft();
+  const ok = known.has(r.a.ref) && known.has(r.b.ref);
+  const warn = $('#reading-warn');
+  if (ok && crossesBarrier(r.a.ref, r.b.ref)) { warn.innerHTML = `${alertIcon}<span>These points are on opposite sides of the traced isolation barrier. Log it only if you measured it; it will be flagged.</span>`; warn.hidden = false; }
+  else if (ok && touchesBarrier(r.a.ref, r.b.ref)) { warn.innerHTML = `${infoIcon}<span>One point spans the isolation barrier, so its side depends on the pin. Note the pin.</span>`; warn.hidden = false; }
+  else warn.hidden = true;
+  $('.value-field').hidden = r.result !== 'resistance';
+}
+rf.addEventListener('input', () => { $('#reading-error').hidden = true; syncReadingWarn(); });
+rf.addEventListener('submit', e => {
+  e.preventDefault();
+  const r = readingDraft();
+  const err = validateReading(r);
+  if (err) { $('#reading-error').textContent = err; $('#reading-error').hidden = false; return; }
+  data.readings.push({ id: store.cryptoId(), a: r.a, b: r.b, result: r.result, value: r.result === 'resistance' ? r.value : '', note: r.note, at: new Date().toISOString() });
+  persist();
+  for (const n of ['aRef', 'aPin', 'bRef', 'bPin', 'value', 'note']) rf.elements[n].value = '';
+  syncReadingWarn();
+  if (!layers.links) toggleLayer('links', true); else refreshLinks();
+  toast('Reading logged.');
+});
+for (const b of document.querySelectorAll('.pick-button')) b.addEventListener('click', () => setMode(mode === `pick-${b.dataset.pick}` ? null : `pick-${b.dataset.pick}`));
+function completePick(key) {
+  const which = mode === 'pick-a' ? 'a' : 'b';
+  rf.elements[`${which}Ref`].value = key;
+  setMode(null);
+  if (!layers.links) toggleLayer('links', true);
+  setTab('links'); openSheet();
+  syncReadingWarn();
+  rf.elements[`${which}Pin`].focus({ preventScroll: true });
+  toast(`Point ${which.toUpperCase()}: ${key}`);
+}
+
+// ---------- tabs & mobile sheets ----------
+function setTab(next) {
+  tab = next;
+  $('#tab-record').setAttribute('aria-selected', String(tab === 'record'));
+  $('#tab-links').setAttribute('aria-selected', String(tab === 'links'));
+  $('#tab-record').tabIndex = tab === 'record' ? 0 : -1;
+  $('#tab-links').tabIndex = tab === 'links' ? 0 : -1;
+  $('#record-panel').hidden = tab !== 'record';
+  $('#links-panel').hidden = tab !== 'links';
+}
+$('#tab-record').addEventListener('click', () => setTab('record'));
+$('#tab-links').addEventListener('click', () => setTab('links'));
+$('.tabs').addEventListener('keydown', e => {
+  if (!['ArrowLeft', 'ArrowRight'].includes(e.key)) return;
+  setTab(tab === 'record' ? 'links' : 'record');
+  $(tab === 'record' ? '#tab-record' : '#tab-links').focus();
+});
+// On phones and tablets the bottom sheet or the layer cards cover the lower screen; the camera refits above them.
+function syncInset() {
+  const cardsOpen = !$('#xray-card').hidden || !$('#zones-card').hidden;
+  let h = 0, w = 0;
+  if (narrow() && $('#inspector').classList.contains('open')) h = $('#inspector').getBoundingClientRect().height;
+  else if (cardsOpen && innerWidth <= 800) h = $('.feature-cards').getBoundingClientRect().height;
+  else if (cardsOpen) w = $('.feature-cards').getBoundingClientRect().width + 14;
+  atlas.setInset(h, w);
+}
+function openSheet() { $('#inspector').classList.add('open'); syncInset(); }
+function closeSheet() { $('#inspector').classList.remove('open'); syncInset(); }
+$('#close-inspector').addEventListener('click', closeSheet);
+$('#mobile-index').addEventListener('click', () => { $('#index-panel').classList.toggle('open'); if ($('#index-panel').classList.contains('open')) closeSheet(); });
+$('#close-index').addEventListener('click', () => $('#index-panel').classList.remove('open'));
+$('#legend-toggle').addEventListener('click', () => {
+  const open = $('#legend').classList.toggle('open');
+  $('#legend-toggle').setAttribute('aria-expanded', String(open));
+});
+addEventListener('resize', () => { syncCards(); syncInset(); });
+
+// ---------- export / import ----------
+$('#export-notes').addEventListener('click', () => {
+  const blob = new Blob([JSON.stringify(store.exportPayload(data), null, 2) + '\n'], { type: 'application/json' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = `48-59-1812-board-records-${new Date().toISOString().slice(0, 10)}.json`;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(link.href), 3000);
+  toast('Records exported as JSON.');
+});
+$('.import-button').addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $('#import-notes').click(); } });
+$('#import-notes').addEventListener('change', async e => {
+  const file = e.target.files?.[0];
+  e.target.value = '';
+  if (!file) return;
+  try {
+    const parsed = store.parseImport(await file.text());
+    if (parsed.kind === 2) {
+      const ok = await confirmAction('Replace the records in this browser?', `The file holds ${Object.keys(parsed.state.notes).length} records, ${parsed.state.custom.length} added markers and ${parsed.state.readings.length} readings. Everything saved here now is replaced.`, 'Replace records');
+      if (!ok) return;
+      localStorage.setItem(store.STORAGE_KEY, JSON.stringify(parsed.state));
+    } else {
+      const n = Object.keys(parsed.notes).length;
+      const ok = await confirmAction('Import notes from a first-atlas file?', `This older export (schema 1) contributes ${n} notes only; its marker positions used a different frame and are ignored. Your current notes are replaced; markers and readings stay.`, 'Import notes');
+      if (!ok) return;
+      data.notes = parsed.notes;
+      store.save(data);
+    }
+    location.reload();
+  } catch (err) {
+    toast(`Import failed: ${err.message}`, 'warn');
   }
 });
-document.querySelector('#add-form').addEventListener('submit', e => {
-  if (e.submitter?.value !== 'add') return;
-  e.preventDefault();
-  const id = document.querySelector('#new-designator').value.trim().toUpperCase();
-  if (!/^[A-Z][A-Z0-9-]{0,15}$/.test(id)) { document.querySelector('#new-designator').setCustomValidity('Use a board marking such as R58 or NTC2.'); document.querySelector('#new-designator').reportValidity(); return; }
-  if (components.some(c => c.id === id)) { document.querySelector('#new-designator').setCustomValidity('That marking is already mapped.'); document.querySelector('#new-designator').reportValidity(); return; }
-  const c = { id, side, kind: 'smd', x: window.pendingPosition.x, z: window.pendingPosition.z, w: 0.35, d: 0.22, custom: true };
-  components.push(c); modelComponent(c); persist(); renderIndex(); selectComponent(id);
-  addMode = false; document.querySelector('#add-reference').classList.remove('active'); document.querySelector('#add-help').hidden = true;
-  document.querySelector('#add-dialog').close();
-});
-document.querySelector('#new-designator').addEventListener('input', e => e.target.setCustomValidity(''));
-document.querySelector('#record-form').addEventListener('input', e => {
-  if (!selectedId || !e.target.name) return;
-  notes[selectedId] = { ...defaultNotes(), ...(notes[selectedId] || {}), [e.target.name]: e.target.value };
-  persist(); renderIndex();
-});
-document.querySelector('#remove-custom').addEventListener('click', () => {
-  const c = components.find(x => x.id === selectedId);
-  if (!c?.custom || !confirm(`Remove ${c.id} from the model and delete its record?`)) return;
-  components = components.filter(x => x !== c); delete notes[c.id];
-  const group = componentMeshes.get(c.id); const label = labelSprites.get(c.id);
-  if (group) { group.traverse(o => { const idx = hitMeshes.indexOf(o); if (idx >= 0) hitMeshes.splice(idx, 1); }); assembly.remove(group); }
-  if (label) assembly.remove(label);
-  componentMeshes.delete(c.id); labelSprites.delete(c.id); selectComponent(null); persist(); renderIndex();
-});
-document.querySelector('#export-notes').addEventListener('click', () => {
-  const payload = { schema: 1, board: 'Milwaukee 48-59-1812 / 860323007 Rev 0.6', exported: new Date().toISOString(), components, notes };
-  const blob = new Blob([JSON.stringify(payload, null, 2) + '\n'], { type: 'application/json' });
-  const link = document.createElement('a'); link.href = URL.createObjectURL(blob);
-  link.download = `48-59-1812-board-records-${new Date().toISOString().slice(0,10)}.json`; link.click();
-  setTimeout(() => URL.revokeObjectURL(link.href), 3000);
-});
-document.querySelector('#import-notes').addEventListener('change', async e => {
-  const file = e.target.files?.[0]; if (!file) return;
-  try {
-    const payload = JSON.parse(await file.text());
-    if (payload.schema !== 1 || !Array.isArray(payload.components) || !payload.notes || typeof payload.notes !== 'object') throw new Error('Not a Board Atlas export.');
-    if (!confirm('Import will replace the records currently saved in this browser. Continue?')) return;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(payload)); location.reload();
-  } catch (err) { alert(`Import failed: ${err.message}`); }
-  e.target.value = '';
-});
-document.querySelector('#mobile-index').addEventListener('click', () => document.querySelector('#index-panel').classList.toggle('mobile-open'));
-document.querySelector('#close-index').addEventListener('click', () => document.querySelector('#index-panel').classList.remove('mobile-open'));
-document.querySelector('#close-inspector').addEventListener('click', () => document.querySelector('#inspector').classList.remove('mobile-open'));
 
+// ---------- photos ----------
 function updatePhoto() {
   const photo = photos[photoIndex];
-  document.querySelector('#photo-title').textContent = photo.label;
-  document.querySelector('#photo-image').src = photo.src;
-  document.querySelector('#photo-position').textContent = `${photoIndex + 1} / ${photos.length}`;
+  const img = $('#photo-image');
+  $('#photo-title').textContent = photo.label;
+  $('#photo-file').textContent = photo.file;
+  $('#photo-position').textContent = `${photoIndex + 1} / ${photos.length}`;
+  $('#photo-loading').hidden = false;
+  img.alt = `${photo.label} (original evidence photograph)`;
+  img.onload = () => { $('#photo-loading').hidden = true; };
+  img.onerror = () => { $('#photo-loading').textContent = 'This photograph could not be loaded.'; };
+  img.src = photo.src;
 }
-document.querySelector('#photo-button').addEventListener('click', () => { updatePhoto(); document.querySelector('#photo-dialog').showModal(); });
-document.querySelector('#photo-close').addEventListener('click', () => document.querySelector('#photo-dialog').close());
-document.querySelector('#photo-prev').addEventListener('click', () => { photoIndex = (photoIndex + photos.length - 1) % photos.length; updatePhoto(); });
-document.querySelector('#photo-next').addEventListener('click', () => { photoIndex = (photoIndex + 1) % photos.length; updatePhoto(); });
+$('#photo-button').addEventListener('click', () => { updatePhoto(); $('#photo-dialog').showModal(); });
+$('#photo-close').addEventListener('click', () => $('#photo-dialog').close());
+$('#photo-prev').addEventListener('click', () => { photoIndex = (photoIndex + photos.length - 1) % photos.length; updatePhoto(); });
+$('#photo-next').addEventListener('click', () => { photoIndex = (photoIndex + 1) % photos.length; updatePhoto(); });
+$('#photo-dialog').addEventListener('keydown', e => {
+  if (e.key === 'ArrowLeft') $('#photo-prev').click();
+  if (e.key === 'ArrowRight') $('#photo-next').click();
+});
+for (const d of document.querySelectorAll('dialog')) d.addEventListener('click', e => { if (e.target === d) d.close(); });
+$('#help-button').addEventListener('click', () => $('#help-dialog').showModal());
+$('#help-dialog [data-close]').addEventListener('click', () => $('#help-dialog').close());
+$('#help-tour').addEventListener('click', () => { $('#help-dialog').close(); $('#onboarding').hidden = false; $('#onboard-done').focus(); });
 
-function resize() {
-  const w = sceneHost.clientWidth, h = sceneHost.clientHeight;
-  if (!w || !h) return;
-  camera.aspect = w / h;
-  camera.updateProjectionMatrix();
-  renderer.setSize(w, h, false);
-  if (!selectedId) setDefaultCamera();
-}
-function setDefaultCamera() {
-  const aspect = sceneHost.clientWidth / Math.max(sceneHost.clientHeight, 1);
-  const distance = Math.max(18.5, 8.9 / Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)), 6.9 / (Math.max(aspect, 0.1) * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))));
-  camera.position.set(0, distance * 0.93, distance * 0.37 + 1.6);
-  controls.target.set(0, 0, 1.7);
-  controls.update();
-}
-new ResizeObserver(resize).observe(sceneHost);
-function animate() { requestAnimationFrame(animate); controls.update(); renderer.render(scene, camera); }
-setSide('top');
-resize();
-animate();
+// ---------- keyboard ----------
+document.addEventListener('keydown', e => {
+  if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
+  const typing = e.target.closest?.('input, textarea, select, [contenteditable]');
+  if (e.key === 'Escape') {
+    if (document.querySelector('dialog[open]')) return;
+    if (mode) { setMode(null); return; }
+    if (!$('#onboarding').hidden) { dismissOnboarding(); return; }
+    if ($('#index-panel').classList.contains('open')) { $('#index-panel').classList.remove('open'); return; }
+    if (typing) { e.target.blur(); return; }
+    if (selected) { select(null); closeSheet(); }
+    return;
+  }
+  if (typing || document.querySelector('dialog[open]')) return;
+  const k = e.key.toLowerCase();
+  const actions = {
+    f: () => setSide(side === 'top' ? 'bottom' : 'top'), 1: () => setView('plan'), 2: () => setView('three'), 3: () => setView('edge'),
+    r: () => setView('three'), l: () => $('#label-toggle').click(), x: () => { if (!document.querySelector('[data-layer=xray]').disabled) toggleLayer('xray'); },
+    i: () => toggleLayer('zones'), c: () => toggleLayer('links'), p: () => $('#surface-toggle').click(),
+    '/': () => { if (innerWidth <= 800) $('#index-panel').classList.add('open'); $('#search').focus(); }, '?': () => $('#help-dialog').showModal()
+  };
+  if (actions[k]) { e.preventDefault(); actions[k](); }
+});
+
+// ---------- start ----------
+renderIndex();
+renderInspector();
+refreshRefOptions();
+refreshLinks();
+syncXrayText();
+syncSurfaceUi();
+setTab('record');
