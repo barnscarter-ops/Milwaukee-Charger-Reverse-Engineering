@@ -2,7 +2,7 @@
 
 ## State at close
 
-- Repository: `D:\Workspace\Active\Milwaukee-Charger-Reverse-Engineering`, branch `feat/atlas-rebuild-opus-audit` (from `main`). Committed 2026-09-25; not pushed yet. Remote: `origin` = github.com/barnscarter-ops/Milwaukee-Charger-Reverse-Engineering (`main`, `polish/pcb-visualization`).
+- Repository: `D:\Workspace\Active\Milwaukee-Charger-Reverse-Engineering`, branch `feat/atlas-rebuild-opus-audit` (from `main`). Committed 2026-09-25, fast-forwarded into `main` and pushed. Remote: `origin` = github.com/barnscarter-ops/Milwaukee-Charger-Reverse-Engineering (`main`; the older `polish/pcb-visualization` branch was deleted after review).
 - Charger remains disassembled and unpowered. No live electrical testing was performed.
 
 ## Board Atlas (rebuilt)
@@ -22,7 +22,7 @@
 
 ## Next session
 
-1. Decided 2026-09-25: T1 test pad stays out of the index; renamed ids accepted. Work committed on this branch, not yet pushed to `origin`.
+1. Decided 2026-09-25: T1 test pad stays out of the index; renamed ids accepted. Work is on `main` at `origin`.
 2. Take a ruler photo of each side so units become measured; re-run `scripts/rectify_photos.py`.
 3. Locate ZD1, C18, C43, R33, R92 legends; place them with Place marker or in `src/board.json`.
 4. Start the unpowered continuity log for the U5/U6 barrier crossings and the R27 path; export records into the repo once reviewed.
