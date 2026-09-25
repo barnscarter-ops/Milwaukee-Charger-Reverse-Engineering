@@ -1,96 +1,53 @@
-// Positions are photographic estimates, not measured PCB coordinates.
-// x/z use a normalized board plane; the rear view mirrors x when flipped.
-export const components = [
-  { id: 'T1', side: 'top', kind: 'transformer', x: 0.35, z: -0.1, w: 2.65, d: 2.65 },
-  { id: 'U1', side: 'top', kind: 'removed', x: 4.25, z: -0.2, w: 0.95, d: 0.78, status: 'removed' },
-  { id: 'U2', side: 'top', kind: 'chip', x: -4.82, z: 1.42, w: 0.46, d: 0.5 },
-  { id: 'C1', side: 'top', kind: 'film', x: 3.95, z: 4.22, w: 0.75, d: 1.0 },
-  { id: 'C2', side: 'top', kind: 'electrolytic', x: 4.98, z: -3.35, w: 0.95, d: 0.95 },
-  { id: 'C3', side: 'top', kind: 'electrolytic', x: 5.13, z: -1.56, w: 1.08, d: 1.08 },
-  { id: 'C5', side: 'top', kind: 'film', x: 2.25, z: -3.35, w: 0.78, d: 0.5 },
-  { id: 'C8', side: 'top', kind: 'electrolytic', x: -3.27, z: 0.83, w: 0.81, d: 0.81 },
-  { id: 'C9', side: 'top', kind: 'electrolytic', x: -4.62, z: 2.46, w: 0.58, d: 0.58 },
-  { id: 'C10', side: 'top', kind: 'electrolytic', x: -3.79, z: 2.32, w: 0.78, d: 0.78 },
-  { id: 'D4', side: 'top', kind: 'led', x: 3.25, z: -4.76, w: 0.22, d: 0.22 },
-  { id: 'D6', side: 'top', kind: 'led', x: -4.55, z: -4.76, w: 0.22, d: 0.22 },
-  { id: 'D8', side: 'top', kind: 'diode', x: 2.35, z: 1.12, w: 0.65, d: 0.32 },
-  { id: 'D9', side: 'top', kind: 'diode', x: 2.61, z: 0.37, w: 0.58, d: 0.3 },
-  { id: 'F1', side: 'top', kind: 'disc', x: 2.95, z: 3.85, w: 0.67, d: 0.32 },
-  { id: 'F3', side: 'top', kind: 'resistor', x: -5.13, z: 2.48, w: 0.62, d: 0.2 },
-  { id: 'F4', side: 'top', kind: 'resistor', x: -5.11, z: -1.64, w: 0.63, d: 0.2 },
-  { id: 'L1', side: 'top', kind: 'inductor', x: 5.05, z: 1.96, w: 1.12, d: 0.58 },
-  { id: 'L2', side: 'top', kind: 'inductor', x: 4.75, z: 3.51, w: 1.32, d: 0.9 },
-  { id: 'NTC1', side: 'top', kind: 'disc', x: 3.32, z: 3.85, w: 0.54, d: 0.27 },
-  { id: 'R8', side: 'top', kind: 'resistor', x: 2.2, z: 0.52, w: 0.48, d: 0.18 },
-  { id: 'R27', side: 'bottom', kind: 'shunt', x: 1.89, z: 0.95, w: 1.13, d: 0.42 },
-  { id: 'U4', side: 'bottom', kind: 'ic', x: 4.25, z: 5.23, w: 1.05, d: 0.78 },
-  { id: 'U5', side: 'bottom', kind: 'ic', x: -0.63, z: 2.85, w: 0.62, d: 0.48 },
-  { id: 'U6', side: 'bottom', kind: 'ic', x: -0.65, z: 2.25, w: 0.62, d: 0.48 },
-  { id: 'U8', side: 'bottom', kind: 'ic', x: 3.9, z: 1.86, w: 0.7, d: 0.57 },
-  { id: 'Q6', side: 'bottom', kind: 'power', x: 4.18, z: -0.5, w: 0.72, d: 0.56 },
-  { id: 'Q7', side: 'bottom', kind: 'power', x: 4.15, z: -3.2, w: 0.72, d: 0.56 },
-  { id: 'Q14', side: 'bottom', kind: 'power', x: 2.48, z: -3.2, w: 0.72, d: 0.56 },
-  { id: 'Q15', side: 'bottom', kind: 'power', x: 2.46, z: -0.5, w: 0.72, d: 0.56 },
-  { id: 'Q2', side: 'bottom', kind: 'smd', x: 1.17, z: 2.02, w: 0.3, d: 0.2 },
-  { id: 'Q10', side: 'bottom', kind: 'smd', x: 3.16, z: 4.45, w: 0.28, d: 0.2 },
-  { id: 'D10', side: 'bottom', kind: 'smd', x: 0.48, z: 3.62, w: 0.32, d: 0.2 },
-  { id: 'D11', side: 'bottom', kind: 'smd', x: 5.17, z: 3.18, w: 0.3, d: 0.2 },
-  { id: 'D12', side: 'bottom', kind: 'smd', x: 5.1, z: 4.65, w: 0.3, d: 0.2 },
-  { id: 'D24', side: 'bottom', kind: 'smd', x: 1.09, z: 2.66, w: 0.3, d: 0.2 },
-  { id: 'ZD1', side: 'bottom', kind: 'smd', x: 0.34, z: 2.4, w: 0.26, d: 0.18 },
-  { id: 'ZD2', side: 'bottom', kind: 'smd', x: 3.23, z: 3.6, w: 0.26, d: 0.18 },
-  { id: 'ZD7', side: 'bottom', kind: 'smd', x: 4.2, z: -3.89, w: 0.3, d: 0.18 },
-  { id: 'R1', side: 'bottom', kind: 'smd', x: -3.6, z: 3.92, w: 0.35, d: 0.18 },
-  { id: 'R2', side: 'bottom', kind: 'smd', x: -3.1, z: 4.26, w: 0.35, d: 0.18 },
-  { id: 'R3', side: 'bottom', kind: 'smd', x: -5.07, z: -0.17, w: 0.38, d: 0.2 },
-  { id: 'R4', side: 'bottom', kind: 'smd', x: -4.45, z: -0.17, w: 0.38, d: 0.2 },
-  { id: 'R5', side: 'bottom', kind: 'smd', x: 1.0, z: -0.99, w: 0.35, d: 0.19 },
-  { id: 'R6', side: 'bottom', kind: 'smd', x: -3.56, z: 0.66, w: 0.35, d: 0.19 },
-  { id: 'R7', side: 'bottom', kind: 'smd', x: -2.62, z: 1.23, w: 0.35, d: 0.19 },
-  { id: 'R10', side: 'bottom', kind: 'smd', x: -2.12, z: 1.37, w: 0.35, d: 0.19 },
-  { id: 'R11', side: 'bottom', kind: 'smd', x: 0.8, z: 2.58, w: 0.34, d: 0.18 },
-  { id: 'R13', side: 'bottom', kind: 'smd', x: -3.44, z: -4.61, w: 0.35, d: 0.18 },
-  { id: 'R17', side: 'bottom', kind: 'smd', x: -4.0, z: -4.52, w: 0.35, d: 0.18 },
-  { id: 'R19', side: 'bottom', kind: 'smd', x: 0.87, z: 3.33, w: 0.35, d: 0.18 },
-  { id: 'R20', side: 'bottom', kind: 'smd', x: 1.74, z: 3.75, w: 0.35, d: 0.18 },
-  { id: 'R22', side: 'bottom', kind: 'smd', x: 1.12, z: 3.55, w: 0.35, d: 0.18 },
-  { id: 'R23', side: 'bottom', kind: 'smd', x: 5.33, z: 1.87, w: 0.35, d: 0.18 },
-  { id: 'R24', side: 'bottom', kind: 'smd', x: 1.35, z: 2.9, w: 0.35, d: 0.18 },
-  { id: 'R28', side: 'bottom', kind: 'smd', x: 2.3, z: 4.15, w: 0.35, d: 0.18 },
-  { id: 'R33', side: 'bottom', kind: 'smd', x: 1.62, z: 2.39, w: 0.35, d: 0.18 },
-  { id: 'R34', side: 'bottom', kind: 'smd', x: 2.65, z: 1.85, w: 0.35, d: 0.18 },
-  { id: 'R38', side: 'bottom', kind: 'smd', x: 2.69, z: 2.85, w: 0.35, d: 0.18 },
-  { id: 'R39', side: 'bottom', kind: 'smd', x: 2.9, z: 2.42, w: 0.35, d: 0.18 },
-  { id: 'R42', side: 'bottom', kind: 'smd', x: 1.56, z: 1.95, w: 0.35, d: 0.18 },
-  { id: 'R44', side: 'bottom', kind: 'smd', x: 2.24, z: 1.92, w: 0.35, d: 0.18 },
-  { id: 'R45', side: 'bottom', kind: 'smd', x: 3.24, z: 2.44, w: 0.35, d: 0.18 },
-  { id: 'R48', side: 'bottom', kind: 'smd', x: 4.83, z: 1.38, w: 0.35, d: 0.18 },
-  { id: 'R52', side: 'bottom', kind: 'smd', x: 2.67, z: 0.14, w: 0.35, d: 0.18 },
-  { id: 'R53', side: 'bottom', kind: 'smd', x: 2.73, z: -3.92, w: 0.35, d: 0.18 },
-  { id: 'R57', side: 'bottom', kind: 'smd', x: 4.75, z: 4.52, w: 0.35, d: 0.18 },
-  { id: 'R90', side: 'bottom', kind: 'smd', x: 0.43, z: 2.02, w: 0.35, d: 0.18 },
-  { id: 'C13', side: 'bottom', kind: 'smd', x: 0.82, z: -1.35, w: 0.36, d: 0.2 },
-  { id: 'C18', side: 'bottom', kind: 'smd', x: 1.02, z: -1.28, w: 0.36, d: 0.2 },
-  { id: 'C21', side: 'bottom', kind: 'smd', x: 5.06, z: 1.48, w: 0.36, d: 0.2 },
-  { id: 'C24', side: 'bottom', kind: 'smd', x: 1.48, z: -0.53, w: 0.36, d: 0.2 },
-  { id: 'C26', side: 'bottom', kind: 'smd', x: 2.22, z: 4.5, w: 0.36, d: 0.2 },
-  { id: 'C27', side: 'bottom', kind: 'smd', x: 2.45, z: 1.74, w: 0.36, d: 0.2 },
-  { id: 'C30', side: 'bottom', kind: 'smd', x: 5.1, z: 0.81, w: 0.36, d: 0.2 },
-  { id: 'C36', side: 'bottom', kind: 'smd', x: 3.72, z: 4.87, w: 0.36, d: 0.2 },
-  { id: 'C38', side: 'bottom', kind: 'smd', x: 3.17, z: 3.04, w: 0.36, d: 0.2 },
-  { id: 'C40', side: 'bottom', kind: 'smd', x: 4.55, z: 2.86, w: 0.36, d: 0.2 },
-  { id: 'C43', side: 'bottom', kind: 'smd', x: 4.6, z: -2.3, w: 0.36, d: 0.2 },
-  { id: 'C44', side: 'bottom', kind: 'smd', x: 4.6, z: -1.9, w: 0.36, d: 0.2 },
-  { id: 'C46', side: 'bottom', kind: 'smd', x: 3.23, z: 5.16, w: 0.36, d: 0.2 },
-  { id: 'C48', side: 'bottom', kind: 'smd', x: 4.48, z: 3.78, w: 0.36, d: 0.2 },
-  { id: 'C50', side: 'bottom', kind: 'smd', x: 3.25, z: 4.16, w: 0.36, d: 0.2 },
-  { id: 'C59', side: 'bottom', kind: 'smd', x: 2.63, z: 0.47, w: 0.36, d: 0.2 },
-  { id: 'C66', side: 'bottom', kind: 'smd', x: 3.35, z: 4.37, w: 0.36, d: 0.2 }
+// Board geometry and part placement, in photo-rectified board units (see src/board.json).
+// Origin is the top-left of the main block, x to the right, y down, viewed from the component side.
+// The solder-side photo is mirrored into the same frame, so a part has the same x/y on both sides.
+// Positions are photographic estimates, not measured geometry.
+import board from './board.json';
+
+export const SIZE = board.size;
+export const THICKNESS = board.thickness;
+export const outline = board.outline;
+export const holes = board.holes;
+export const isolation = board.isolation;
+export const parts = board.parts;
+export const unplaced = board.unplaced;
+export const UNITS_NOTE = board.units;
+
+export const textures = {
+  top: new URL('../evidence/derived/2026-09-24/board-top.jpg', import.meta.url).href,
+  bottom: new URL('../evidence/derived/2026-09-24/board-bottom.jpg', import.meta.url).href
+};
+
+// Original evidence photographs (never modified), in the order the photo viewer shows them.
+// Literal URLs so Vite can resolve and bundle each file.
+const photo = (src, label) => ({ label, file: decodeURIComponent(src.split('/2026-09-24/').pop().split('?')[0]), src });
+export const photos = [
+  photo(new URL('../evidence/2026-09-24/board-overview/1-Photo-1.jpg', import.meta.url).href, 'Component side, overview'),
+  photo(new URL('../evidence/2026-09-24/board-overview/3-Photo-3.jpg', import.meta.url).href, 'Solder side, overview'),
+  photo(new URL('../evidence/2026-09-24/board-overview/2-Photo-2.jpg', import.meta.url).href, 'Oblique view: left capacitors, M12/M18 pads, removed contact assembly'),
+  photo(new URL('../evidence/2026-09-24/pcb-macros/1-Photo-1.jpg', import.meta.url).href, 'Solder side: U4 controller area'),
+  photo(new URL('../evidence/2026-09-24/pcb-macros/2-Photo-2.jpg', import.meta.url).href, 'Solder side: R27 and the control area'),
+  photo(new URL('../evidence/2026-09-24/pcb-macros/3-Photo-3.jpg', import.meta.url).href, 'Solder side: Q6, Q7, Q14, Q15 and the cross slot'),
+  photo(new URL('../evidence/2026-09-24/pcb-macros/4-Photo-4.jpg', import.meta.url).href, 'Solder side: U1 pads, U5 and U6 across the barrier'),
+  photo(new URL('../evidence/2026-09-24/pcb-macros/5-Photo-5.jpg', import.meta.url).href, 'Solder side: primary area'),
+  photo(new URL('../evidence/2026-09-24/pcb-macros/6-Photo-6.jpg', import.meta.url).href, 'Solder side, detail'),
+  photo(new URL('../evidence/2026-09-24/board-overview/4-Photo-4.jpg', import.meta.url).href, 'Removed U1, face'),
+  photo(new URL('../evidence/2026-09-24/board-overview/5-Photo-5.jpg', import.meta.url).href, 'Removed U1, face (second exposure)'),
+  photo(new URL('../evidence/2026-09-24/charger-label-and-u1/1-Photo-1.jpg', import.meta.url).href, 'Removed U1 on its heat sink'),
+  photo(new URL('../evidence/2026-09-24/charger-label-and-u1/2-Photo-2.jpg', import.meta.url).href, 'Removed U1 on its heat sink, second angle'),
+  photo(new URL('../evidence/2026-09-24/charger-label-and-u1/3-Photo-3.jpg', import.meta.url).href, 'Charger nameplate')
 ];
 
-export const photos = [
-  { label: 'Component side', src: new URL('../evidence/2026-09-24/board-overview/1-Photo-1.jpg', import.meta.url).href },
-  { label: 'Solder side', src: new URL('../evidence/2026-09-24/board-overview/3-Photo-3.jpg', import.meta.url).href },
-  { label: 'Solder-side detail', src: new URL('../evidence/2026-09-24/pcb-macros/6-Photo-6.jpg', import.meta.url).href },
-  { label: 'U1 removed part', src: new URL('../evidence/2026-09-24/charger-label-and-u1/1-Photo-1.jpg', import.meta.url).href }
-];
+// Parts that get a permanent label chip in the default view.
+export const keyParts = new Set(['T1', 'U1', 'C1', 'C2', 'C3', 'F1', 'NTC1', 'VR1', 'R27', 'U3', 'U4', 'U5', 'U6', 'Q6', 'Q7', 'Q14', 'Q15', 'X-BRACKET', 'X-BRIDGE', 'X-CHOKE']);
+
+const KIND_LABEL = {
+  xfmr: 'Transformer', bracket: 'Aluminium bracket', elcap: 'Electrolytic capacitor', block: 'Rectifier-style block', choke: 'Choke',
+  film: 'Film capacitor', disc: 'Disc component', discflat: 'Disc component (lying)', fuse: 'Radial fuse', filmcyl: 'Film capacitor', graycyl: 'Cylindrical part', axial: 'Axial part',
+  led: 'LED', to92: 'TO-92 device', jumper: 'Wire jumper', header: 'Header pads', pad: 'Solder pad', marker: 'Legend only', removed: 'Removed footprint',
+  ssop: 'SSOP IC', soic: 'SOIC IC', sop4: 'SOP-4 device', dpak: 'DPAK device', shunt: 'Resistor marked R050', sma: 'Diode body', tp: 'Test point', smd: 'Surface-mount part',
+  'smd-custom': 'Added marker'
+};
+export const kindLabel = kind => KIND_LABEL[kind] || 'Part';
+
+export { halfExtent, footprintCentre } from './geometry.js';
