@@ -24,6 +24,15 @@ Source folder: `evidence/2026-09-24/pcb-macros/`
 - Large Q6/Q15 power devices and U4 controller region are visible.
 - Removed battery-contact pad areas are documented; copper/through-hole condition must be treated carefully when tracing.
 
+## 2026-09-24 - Derived board textures (Board Atlas)
+
+Output folder: `evidence/derived/2026-09-24/` (derived; originals untouched). Script: `scripts/rectify_photos.py`.
+
+- `board-top.jpg` from `board-overview/1-Photo-1.jpg`: perspective-corrected with 6 corner correspondences into board units (1 unit = 1.8 px, scale about 0.1 mm assumed, not measured); edge pixels inpainted; tall parts painted out so the 3D models do not double-draw.
+- `board-bottom.jpg` from `board-overview/3-Photo-3.jpg`: same correction, mirrored into the component-side view, then registered to `board-top.jpg` with a smoothed thin-plate spline on 33 through-hole tie points (pads, jumper holes, U1 pins, slots). Residual mean 1.2, max 3.1 units; confidence probable.
+- Isolation keep-out traced by eye on `board-bottom.jpg` (about 10 units); stored in `src/board.json` as `isolation`, confidence probable.
+- Legend corrections read on these crops: R1 and R3 re-anchored, TP26/ZD11 separated, R41 added, R33 and R92 unplaced (their anchors read R93 and R94). Slot under U5/U6 added (bodies visible through it in 1-Photo-1.jpg). Details: `notes/ATLAS_AUDIT.md`.
+
 ## Open evidence requests
 
 - Ruler or tape-measure photo for board-scale reference.
